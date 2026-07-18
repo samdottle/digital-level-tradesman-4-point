@@ -1,52 +1,42 @@
 # Digital Level Tradesman 4 Point — Web App
 
-**Revision 1** (based on v1.0) · 2026-07-18 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
+**Revision 2** (based on v1.0) · 2026-07-18 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
 
-## Why "Revision" instead of "Version"
-Switching to Rev N labeling for this ongoing Tare troubleshooting effort,
-at your request — the discarded v1.1–v1.4 line, plus the two further
-v1.1/v1.2 iterations built after that restart, made version numbers
-themselves a source of confusion. Revisions are **not** confirmed
-releases. Once the Tare problem is fully resolved, the final working
-revision will be consolidated into a proper Version 1.1.
+## What was reported against Rev 1
+With the unit freshly tared offline, connect shows the bubble centered
+correctly. Tapping Tare then makes it drift to -2.90° left. Disconnecting
+and reconnecting shows the *same* -2.90° again. Tapping Tare a second
+time does not move it at all — stays at -2.90°.
 
-**Confined to Digital Level Tradesman 4 Point only** — no other product
-in the family touched by this work yet.
+## Diagnosis
+Traced this precisely against the firmware's actual `CAL:` (absolute set)
+and `TAR:` (relative add) semantics: this exact sequence is what you'd
+see if the **clear** step (`CAL:0.00,0.00`) succeeds every time, but the
+follow-up **set** step (`CAL:<observed raw>,<observed raw>`) never takes
+effect. Clear succeeding reveals the true, previously-masked raw tilt
+(-2.90°); if set then silently fails, that raw tilt is what stays on
+screen permanently, unaffected by reconnects or repeated attempts —
+matching all four reported observations exactly.
 
-## What changed in Rev 1: redesigned Tare
-Previously, Tare sent `TAR:<displayed pitch>,<displayed roll>` — the
-firmware **adds** this to whatever offset it already has stored
-(confirmed directly against the firmware source: `pitchOffset +=`).
-That's the mathematically necessary approach given that the app only
-ever sees the already-corrected reading, never the sensor's true raw
-value — but it means any past display error, from any cause, got
-permanently added into the firmware's stored (flash-persisted) offset,
-with no way to recover except tapping Tare again from a since-corrected
-reading.
-
-**Fix:** Tare now clears the firmware's offset first (`CAL:0.00,0.00`,
-which the firmware **sets** rather than adds — also confirmed against
-the firmware source), waits for a few clean raw samples once that offset
-is wiped, then sets the offset directly from that observation
-(`CAL:`, absolute) instead of adding to anything. This can't compound a
-bad prior offset, whatever caused it — nothing from before the clear
-factors into the new value.
-
-## Three safeguards around the new async sequence
-None of this can be verified against real BLE timing from here, so:
-1. **Timeout** (3000ms) — if no raw packet arrives after clearing, abort
-   back to idle instead of leaving Tare permanently stuck.
-2. **Double-tap guard** — tapping Tare again mid-sequence is ignored
-   (with a toast), rather than starting an overlapping second sequence.
-3. **Disconnect guard** — disconnecting mid-sequence resets the tare
-   state, so a future reconnect can't inherit stale mid-tare state.
+## What changed in Rev 2
+1. **Found a real, concrete gap:** `send()` had a completely silent
+   `catch(_){}` — any BLE write failure produced zero indication, to the
+   user or in the code. Now returns `true`/`false` for success/failure
+   and surfaces a toast on any caught write error.
+2. **Tare's clear step is now awaited**, and checked for success, before
+   the sequence proceeds to collect raw samples — previously it was
+   fire-and-forget with no guarantee it had actually completed before
+   moving on, which could let the clear and set writes overlap/race.
 
 ## Honesty about confidence level
-The underlying math (clear-then-set beats add-to-whatever's-already-there)
-is verified correct on paper and against the actual firmware source code.
-The async/timing mechanics of the three safeguards above are **not**
-verified against real hardware — this needs real-device testing before
-being trusted as fully working.
+I traced the reported symptom to a specific, plausible mechanism and
+fixed the two most likely contributing issues I could find in the code.
+I cannot confirm from here whether either was the actual root cause, or
+whether some other issue — e.g. the firmware itself failing to process
+two commands sent close together, which no app-side fix can address — is
+still present. **If -2.90° (or similar stuck-at-raw-value behavior)
+persists after this**, that points away from both fixes in this revision
+and toward the firmware's own command handling as the next place to look.
 
 ## Family naming (current)
 - **Digital Level RV** — MPU-6050, 4-point bull's-eye UI, RV market

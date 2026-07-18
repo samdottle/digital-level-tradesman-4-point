@@ -2,8 +2,47 @@
 <!--
   Digital Level Tradesman 4 Point -- Web App
 
-  REVISION 1 (based on v1.0)
+  REVISION 2 (based on v1.0)
   Date: 2026-07-18
+
+  Reported (against Rev 1): with the unit freshly tared offline, connect
+  shows the bubble centered correctly. Tapping Tare then makes it drift to
+  -2.90 deg left. Disconnecting and reconnecting shows the SAME -2.90 deg
+  again. Tapping Tare a second time does not move it at all -- stays at
+  -2.90 deg.
+
+  Traced this precisely against the firmware's actual CAL: (absolute set)
+  and TAR: (relative add) semantics: this exact sequence is what you'd see
+  if the CLEAR step (CAL:0.00,0.00) succeeds every time, but the follow-up
+  SET step (CAL:<observed raw>,<observed raw>) never takes effect. Clear
+  succeeding reveals the true, previously-masked raw tilt (-2.90); if set
+  then silently fails, that raw tilt is what stays on screen permanently,
+  unaffected by reconnects or repeated attempts -- matching all four
+  reported observations exactly.
+
+  New in Rev 2 (changes from Rev 1):
+    - Found a real, concrete gap while investigating: send() had a
+      completely silent catch(_){} -- any BLE write failure produced zero
+      indication to the user or in the code. Now returns true/false for
+      success/failure and surfaces a toast on any caught write error,
+      instead of swallowing it silently.
+    - The Tare button's onClick is now async and AWAITS the clear write,
+      checking it actually succeeded before proceeding to the raw-sample-
+      collection phase -- previously the clear was fire-and-forget, with
+      no guarantee it had actually completed (from the browser's
+      perspective) before the sequence moved on. This removes any chance
+      of the clear and set writes overlapping/racing at the BLE-stack
+      level.
+    - Honesty note: I traced the reported symptom to a specific, plausible
+      mechanism and fixed the two most likely contributing issues I could
+      find in the code (silent failure, un-awaited first write). I cannot
+      confirm from here whether either was the actual root cause, or
+      whether some other issue (e.g. the firmware itself failing to
+      process two commands sent close together, which no app-side fix can
+      address) is still present. If -2.90 (or any similar stuck-at-raw-
+      value behavior) persists after this, that would point away from
+      both fixes in this revision and toward the firmware's own command
+      handling as the next place to look.
 
   Switching to "Revision" (Rev N) instead of "Version" for this ongoing
   Tare troubleshooting effort, at the user's request -- the prior
@@ -532,9 +571,23 @@ function App(){
   },[]);
 
   const send=useCallback(async cmd=>{
-    if(!txRef.current)return;
-    try{await txRef.current.writeValue(new TextEncoder().encode(cmd+'\n'));}catch(_){}
-  },[]);
+    if(!txRef.current)return false;
+    try{
+      await txRef.current.writeValue(new TextEncoder().encode(cmd+'\n'));
+      return true;
+    }catch(err){
+      // Rev 2: this used to be a silent catch(_){} -- any write failure
+      // (dropped write, GATT busy, characteristic not ready) produced zero
+      // indication to the user OR to me. Tracing a reported bug where Tare's
+      // clear step appeared to work but the follow-up set step never took
+      // effect pointed straight at this as a real diagnostic gap. Now
+      // surfaces failures and reports success/failure to the caller so
+      // sequences that depend on a write actually landing (like Tare) can
+      // react instead of assuming it worked.
+      toast(`Command failed: ${cmd.split(':')[0]} (${err.message||err})`,'error');
+      return false;
+    }
+  },[toast]);
 
   // BLE data — NOTE: if live hardware roll is inverted vs spec,
   // change parseFloat(m[2]) to -parseFloat(m[2]) here and nowhere else.
@@ -556,7 +609,7 @@ function App(){
       const avgP=tareRawBufRef.current.reduce((s,x)=>s+x[0],0)/n;
       const avgR=tareRawBufRef.current.reduce((s,x)=>s+x[1],0)/n;
       clearTimeout(tareTimeoutRef.current);
-      send(`CAL:${avgP.toFixed(2)},${avgR.toFixed(2)}`); // absolute set, from a clean observation -- can't compound a bad prior offset
+      send(`CAL:${avgP.toFixed(2)},${avgR.toFixed(2)}`); // absolute set, from a clean observation -- can't compound a bad prior offset. Fire-and-forget here, but send() itself now surfaces a failure toast if this write doesn't go through (Rev 2), instead of failing silently.
       tareStateRef.current='idle';
       tareRawBufRef.current=[];
       epRef.current=0;erRef.current=0;
@@ -653,7 +706,7 @@ function App(){
             h('h1',{style:{fontSize:'22px',fontWeight:300,color:'white',margin:0,lineHeight:1}},
               'Digital Level Tradesman ',h('span',{style:{fontWeight:700,color:'#fbbf24'}},'4 Point')),
             h('p',{style:{fontSize:'10px',color:'#475569',margin:'2px 0 0'}},
-              'MPU-6050 \u00B7 ESP32 \u00B7 BLE \u00B7 Rev 1 (based on v1.0)')
+              'MPU-6050 \u00B7 ESP32 \u00B7 BLE \u00B7 Rev 2 (based on v1.0)')
           ),
           h('div',{style:{display:'flex',alignItems:'center',gap:'5px',padding:'4px 10px',
               borderRadius:'20px',border:`1px solid ${sc}40`,background:`${sc}12`,
@@ -800,7 +853,7 @@ function App(){
 
         // Tare
         h('button',{
-            onClick:()=>{
+            onClick:async()=>{
               if(!isConnected){toast('Not connected \u2014 tare not applied');return;}
               // Rev 1: redesigned. Previously sent TAR: (adds the current
               // DISPLAYED value to whatever offset the firmware already had
@@ -815,10 +868,25 @@ function App(){
               if(tareStateRef.current!=='idle'){
                 toast('Tare already in progress\u2026');return; // guard: ignore taps mid-sequence
               }
+              // Rev 2: await the clear write and check it actually succeeded
+              // (send() now reports success/failure -- see its definition)
+              // before entering the raw-sample-collection phase, instead of
+              // firing it and immediately moving on regardless. A reported
+              // bug (clear appeared to work, but a follow-up set never took
+              // effect, reproducibly across reconnects and repeated taps)
+              // pointed at the two writes possibly racing each other or the
+              // second one being silently dropped -- this removes any chance
+              // of the two writes overlapping at the BLE-stack level.
+              tareStateRef.current='clearing';
+              toast('Taring\u2026');
+              const cleared=await send('CAL:0.00,0.00');
+              if(!cleared){
+                tareStateRef.current='idle';
+                toast('Tare failed \u2014 could not clear offset, try again','error');
+                return;
+              }
               tareStateRef.current='awaiting-raw';
               tareRawBufRef.current=[];
-              send('CAL:0.00,0.00');
-              toast('Taring\u2026');
               clearTimeout(tareTimeoutRef.current);
               tareTimeoutRef.current=setTimeout(()=>{
                 // guard: if no raw packet arrives (dropped BLE packet, unit
@@ -840,7 +908,7 @@ function App(){
         h('div',{style:{textAlign:'center',fontSize:'11px',color:'#1e3a5f',paddingTop:'4px'}},
           h('p',{style:{margin:0}},'Arduino Nano ESP32 + MPU-6050 \u00B7 BLE Nordic UART'),
           h('p',{style:{margin:'3px 0 0'}},
-            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 Rev 1`)
+            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 Rev 2`)
         )
       )
     ),
