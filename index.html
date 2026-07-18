@@ -2,8 +2,43 @@
 <!--
   Digital Level Tradesman 4 Point -- Web App
 
-  REVISION 4 (based on v1.0)
+  REVISION 5 (based on v1.0)
   Date: 2026-07-18
+
+  Reported against Rev 4: on tap, the bubble drifts SLOWLY left (during
+  the 3-second clear/delay window), then SNAPS to center, then drifts
+  SLOWLY left again back to the same value as before.
+
+  Traced this precisely. Phases 1 and 3 are both honest reflections of
+  real incoming packets under normal EMA smoothing -- nothing wrong with
+  either. Phase 2 (the snap to center) was NEVER confirmed: the app sent
+  the CAL: set command and immediately assumed success -- resetting the
+  display to 0 and showing "Tared" without checking whether the offset
+  had actually changed. If the set never took effect, phase 3 is simply
+  the display catching back up to the real, still-uncorrected value the
+  firmware keeps sending. The app was not lying about the physical
+  reading at any point -- it was making an unconfirmed claim of success
+  in between.
+
+  New in Rev 5 (changes from Rev 4):
+    - Replaced the optimistic "send set command, assume success" step
+      with a genuine confirmation step: after sending CAL:<value>, the
+      app now watches subsequent real packets for evidence the reading
+      has actually gone near zero (within TARE_CONFIRM_TOLERANCE_DEG =
+      0.20 deg) before declaring success. Nothing is reset or reported as
+      "Tared" until that's observed.
+    - If confirmation doesn't arrive within TARE_CONFIRM_TIMEOUT_MS
+      (2500ms), the SAME computed value is resent once
+      (TARE_MAX_RETRIES = 1) -- covers a one-off dropped write rather
+      than a deterministic failure.
+    - If the retry also isn't confirmed, Tare now reports an HONEST
+      failure ("offset change not confirmed by the unit") instead of a
+      false success that silently reverts a few seconds later.
+    - This does not by itself explain WHY the set fails -- it makes the
+      app's reporting truthful instead of optimistic, and turns "does the
+      set actually work" into a directly observable yes/no (a real
+      'Tared — confirmed' vs. a real failure toast) rather than something
+      that had to be inferred from watching the bubble drift back.
 
   Sharper evidence found on closer comparison against DL Tradesman
   (standard): that product sends these EXACT two commands
@@ -576,11 +611,29 @@ function App(){
   // directly from that observation (CAL:, absolute) instead of adding to
   // whatever offset was already stored (TAR:, relative). This can't
   // compound an already-wrong offset, whatever caused it.
-  const tareStateRef=useRef('idle'); // 'idle' | 'awaiting-raw'
+  //
+  // Rev 5: reported a 3-phase motion on tap -- slow drift left (during the
+  // clear/delay window), a snap back to center, then a slow drift left
+  // again to the same value as before. Traced this precisely: phases 1 and
+  // 3 are both honest reflections of real incoming packets under normal
+  // EMA smoothing. Phase 2 (the snap to center) was NEVER confirmed --
+  // the app sent the CAL: set command and immediately assumed success,
+  // resetting the display and showing "Tared" without checking whether
+  // the offset actually changed. That's the bug being fixed here: replace
+  // the optimistic reset with an actual confirmation step that watches
+  // real packets for evidence the offset took effect, and reports honest
+  // failure if it doesn't -- instead of showing a success message that
+  // silently reverts itself once the display catches back up to reality.
+  const tareStateRef=useRef('idle'); // 'idle' | 'clearing' | 'awaiting-raw' | 'confirming'
   const tareRawBufRef=useRef([]);
   const tareTimeoutRef=useRef(null);
+  const tareSetValueRef=useRef(null); // [avgP,avgR] most recently sent as the set command, for confirmation comparison and retry
+  const tareRetriesRef=useRef(0);
   const TARE_RAW_SAMPLES=3;
   const TARE_TIMEOUT_MS=3000; // abort back to idle if no raw packet arrives -- guards against a lost/dropped response leaving Tare permanently stuck
+  const TARE_CONFIRM_TOLERANCE_DEG=0.20; // how close to 0 counts as "confirmed" -- generous enough for residual sensor noise, tight enough to mean the offset really changed
+  const TARE_CONFIRM_TIMEOUT_MS=2500; // how long to wait for confirmation before retrying or giving up
+  const TARE_MAX_RETRIES=1; // resend the set command once more before reporting failure, in case of a one-off dropped write
 
   const[pitch,setPitch]=useState(0);
   const[roll,setRoll]=useState(0);
@@ -649,6 +702,30 @@ function App(){
     }
   },[toast]);
 
+  // Rev 5: sends the CAL: set command and manages what happens next --
+  // confirmation, one retry, or an honest failure report -- instead of
+  // the previous behavior of sending it and immediately assuming success.
+  const attemptSetOffset=useCallback((avgP,avgR)=>{
+    tareSetValueRef.current=[avgP,avgR];
+    tareStateRef.current='confirming';
+    send(`CAL:${avgP.toFixed(2)},${avgR.toFixed(2)}`); // absolute set, from a clean observation -- can't compound a bad prior offset. Fire-and-forget here, but send() itself surfaces a failure toast if this write doesn't go through at the JS/browser level (Rev 2); confirmation of whether it actually took effect on the firmware happens separately, below.
+    clearTimeout(tareTimeoutRef.current);
+    tareTimeoutRef.current=setTimeout(()=>{
+      if(tareStateRef.current!=='confirming')return; // already confirmed or aborted elsewhere
+      if(tareRetriesRef.current<TARE_MAX_RETRIES){
+        tareRetriesRef.current+=1;
+        toast('Tare not yet confirmed \u2014 retrying\u2026');
+        const[rp,rr]=tareSetValueRef.current;
+        attemptSetOffset(rp,rr); // resend the SAME computed value -- not a fresh raw observation, since the unit hasn't moved
+      }else{
+        tareStateRef.current='idle';
+        tareSetValueRef.current=null;
+        tareRetriesRef.current=0;
+        toast('Tare failed \u2014 offset change not confirmed by the unit','error');
+      }
+    },TARE_CONFIRM_TIMEOUT_MS);
+  },[send,toast]);
+
   // BLE data — NOTE: if live hardware roll is inverted vs spec,
   // change parseFloat(m[2]) to -parseFloat(m[2]) here and nowhere else.
   const onData=useCallback(e=>{
@@ -668,13 +745,31 @@ function App(){
       const n=tareRawBufRef.current.length;
       const avgP=tareRawBufRef.current.reduce((s,x)=>s+x[0],0)/n;
       const avgR=tareRawBufRef.current.reduce((s,x)=>s+x[1],0)/n;
-      clearTimeout(tareTimeoutRef.current);
-      send(`CAL:${avgP.toFixed(2)},${avgR.toFixed(2)}`); // absolute set, from a clean observation -- can't compound a bad prior offset. Fire-and-forget here, but send() itself now surfaces a failure toast if this write doesn't go through (Rev 2), instead of failing silently.
-      tareStateRef.current='idle';
       tareRawBufRef.current=[];
-      epRef.current=0;erRef.current=0;
-      setPitch(0);setRoll(0);
-      toast('Tared \u2014 display zeroed','success');
+      attemptSetOffset(avgP,avgR);
+      return;
+    }
+
+    // Rev 5: previously the app sent the set command and immediately
+    // assumed success (optimistic reset to 0 + "Tared" toast) without ever
+    // checking whether the offset actually changed. Now: watch real
+    // incoming packets for evidence the firmware's own transmitted value
+    // has actually gone near zero, and only THEN report success. If
+    // confirmation doesn't arrive in time, attemptSetOffset's own timeout
+    // (below) handles retry/failure -- this branch only handles the
+    // success path.
+    if(tareStateRef.current==='confirming'){
+      if(Math.abs(rp)<=TARE_CONFIRM_TOLERANCE_DEG && Math.abs(rr)<=TARE_CONFIRM_TOLERANCE_DEG){
+        clearTimeout(tareTimeoutRef.current);
+        tareStateRef.current='idle';
+        tareSetValueRef.current=null;
+        tareRetriesRef.current=0;
+        epRef.current=0;erRef.current=0;
+        setPitch(0);setRoll(0);
+        toast('Tared \u2014 confirmed','success');
+      }
+      // else: still waiting: fall through without touching the display,
+      // same as 'awaiting-raw' -- don't flash the not-yet-corrected reading.
       return;
     }
 
@@ -702,7 +797,7 @@ function App(){
     }
     setPitch(+(epRef.current).toFixed(2));
     setRoll( +(erRef.current).toFixed(2));
-  },[send,toast]);
+  },[send,toast,attemptSetOffset]);
 
   const onDisc=useCallback(()=>{
     setIsConnected(false);txRef.current=null;
@@ -713,6 +808,7 @@ function App(){
     // were still part of an old tare attempt.
     clearTimeout(tareTimeoutRef.current);
     tareStateRef.current='idle';tareRawBufRef.current=[];
+    tareSetValueRef.current=null;tareRetriesRef.current=0; // Rev 5
     toast('Disconnected');
   },[toast]);
 
@@ -766,7 +862,7 @@ function App(){
             h('h1',{style:{fontSize:'22px',fontWeight:300,color:'white',margin:0,lineHeight:1}},
               'Digital Level Tradesman ',h('span',{style:{fontWeight:700,color:'#fbbf24'}},'4 Point')),
             h('p',{style:{fontSize:'10px',color:'#475569',margin:'2px 0 0'}},
-              'MPU-6050 \u00B7 ESP32 \u00B7 BLE \u00B7 Rev 4 (based on v1.0)')
+              'MPU-6050 \u00B7 ESP32 \u00B7 BLE \u00B7 Rev 5 (based on v1.0)')
           ),
           h('div',{style:{display:'flex',alignItems:'center',gap:'5px',padding:'4px 10px',
               borderRadius:'20px',border:`1px solid ${sc}40`,background:`${sc}12`,
@@ -994,7 +1090,7 @@ function App(){
         h('div',{style:{textAlign:'center',fontSize:'11px',color:'#1e3a5f',paddingTop:'4px'}},
           h('p',{style:{margin:0}},'Arduino Nano ESP32 + MPU-6050 \u00B7 BLE Nordic UART'),
           h('p',{style:{margin:'3px 0 0'}},
-            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 Rev 4`)
+            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 Rev 5`)
         )
       )
     ),

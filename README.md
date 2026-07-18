@@ -1,40 +1,42 @@
 # Digital Level Tradesman 4 Point — Web App
 
-**Revision 4** (based on v1.0) · 2026-07-18 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
+**Revision 5** (based on v1.0) · 2026-07-18 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
 
-## Sharper evidence behind this revision
-Closer comparison against DL Tradesman (standard) found that product
-sends these **exact same two commands** — `CAL:0.00,0.00` and
-`CAL:<value>` — elsewhere in its own code (a "Reset" action, and the end
-of its 2-position Calibration flow), but **never as an automated pair**.
-Its Calibration flow alone has a 3-second countdown before anything else
-happens, followed by ~6 seconds of sample collection before its own
-`CAL:` command is sent. Nothing in this product family has ever tested a
-gap as short as Rev 3's 300ms between two `CAL:`-family commands.
+## What was reported against Rev 4
+On tap, the bubble drifts *slowly* left (during the 3-second clear/delay
+window), then *snaps* to center, then drifts *slowly* left again, back to
+the same value as before.
 
-## What changed in Rev 4
-Raised the wall-clock delay between the clear write succeeding and the
-app trusting subsequent packets from 300ms to **3000ms** — a floor
-directly matched to the shortest known-good gap actually present in a
-working flow in the sibling product (its 3-second countdown), not an
-arbitrary increase. This is the only change in this revision.
+## Diagnosis
+Traced this precisely. Phases 1 and 3 are both honest reflections of real
+incoming packets under normal EMA smoothing — nothing wrong with either.
+**Phase 2 (the snap to center) was never confirmed** — the app sent the
+`CAL:` set command and immediately assumed success, resetting the display
+to 0 and showing "Tared" without checking whether the offset had actually
+changed. If the set never took effect, phase 3 is simply the display
+catching back up to the real, still-uncorrected value the firmware keeps
+sending. The app was never lying about the physical reading — it was
+making an *unconfirmed claim of success* in between.
 
-**Verified before shipping:**
-- The longer delay does not conflict with the existing
-  `TARE_TIMEOUT_MS=3000` guard — that timer only starts *after* this new
-  delay completes, so it cannot fire prematurely mid-wait.
-- The double-tap guard still correctly blocks a second tap during the
-  now-longer wait.
+## What changed in Rev 5
+- Replaced the optimistic "send set command, assume success" step with a
+  genuine confirmation step: after sending `CAL:<value>`, the app now
+  watches subsequent real packets for evidence the reading has actually
+  gone near zero (within 0.20°) before declaring success.
+- If confirmation doesn't arrive within 2.5 seconds, the same computed
+  value is resent once — covers a one-off dropped write rather than a
+  deterministic failure.
+- If the retry also isn't confirmed, Tare now reports an **honest
+  failure** ("offset change not confirmed by the unit") instead of a
+  false success that silently reverts a few seconds later.
 
-## Honesty about confidence level
-This is a more strongly evidenced value than Rev 3's 300ms, but it's
-still a floor/starting point, not a measured requirement.
-- **If this resolves it** — the true minimum needed gap is still unknown
-  (could be shorter than 3s).
-- **If it does not resolve it** — that's meaningfully stronger evidence
-  against the timing theory in general than Rev 3's result alone, since
-  this gap is now backed by a known-good comparison point rather than an
-  arbitrary guess.
+## What this does and doesn't tell us
+This does not by itself explain *why* the set fails. What it does is make
+the app's reporting truthful instead of optimistic, and turns "does the
+set actually work" into a directly observable yes/no — a real
+"Tared — confirmed" vs. a real failure toast — rather than something that
+had to be inferred by watching the bubble drift back over several
+seconds.
 
 ## Family naming (current)
 - **Digital Level RV** — MPU-6050, 4-point bull's-eye UI, RV market
