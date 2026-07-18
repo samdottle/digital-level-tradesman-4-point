@@ -1,6 +1,30 @@
 # Digital Level Tradesman 4 Point — Web App
 
-**Version 1.0** · 2026-07-16 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
+**Version 1.2** · 2026-07-18 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
+
+## What changed in v1.2
+The bubble felt very slow to respond while actually connected to hardware
+(confirmed snappy in Bubble Demo, which bypasses the sensor/smoothing path
+entirely — that comparison is what isolated the cause). Root cause: fixed
+`EMA_ALPHA = 0.05` smoothing alone. The math: reaching 95% of a real step
+change takes ~58 samples, 99% takes ~90 — several seconds at a typical
+streaming rate. Purely a smoothing artifact, not a hardware or noise
+problem.
+
+**Fix: adaptive two-rate smoothing**, applied independently per pitch and
+roll (a real adjustment often only changes one axis at a time — e.g.
+turning one screw). While a new sample differs from the current smoothed
+value by more than `ADAPT_THRESHOLD_DEG` (0.15°), the display uses a fast
+alpha (0.30) to catch up quickly; once close to settled, it drops back to
+the original 0.05 for the same low-jitter stability as before. This does
+**not** change steady-state accuracy — a settled EMA converges to the same
+mean regardless of alpha — it only changes how long it takes to get there.
+
+`ADAPT_THRESHOLD_DEG` is a reasoned starting estimate (set above
+MPU-6050's expected per-sample noise, below a typical real screw-turn
+change), not a value verified against real MPU-6050 noise data yet. Worth
+field-tuning once tested — and this same technique may be worth applying
+to Digital Level Tradesman (standard), which shares the same sensor.
 
 ## Family naming (current)
 - **Digital Level RV** — MPU-6050, 4-point bull's-eye UI, RV market
@@ -8,45 +32,6 @@
 - **Digital Level Tradesman 4 Point** (this product) — MPU-6050, 4-point bull's-eye UI, general trades / machine leveling
 - **Digital Level Pro** — ADXL355, standard bubble UI, precision/millwright
 - **Digital Level Pro 4 Point** — ADXL355, 4-point bull's-eye UI, precision/millwright
-
-## What this is
-Digital Level Pro 4 Point's bull's-eye + 4-point advisory UI and
-leveling-screw workflow, running on **MPU-6050 instead of ADXL355** — a
-"for now" stopgap while ADXL355 isn't in use for this tier, the same
-situation Digital Level Pro itself went through before ADXL355 became
-available again.
-
-## Precision constants: kept identical to Pro 4 Point, on purpose
-The ±0.01°/0.05°/0.10° threshold options, smoothing, and display scale are
-unchanged from Pro 4 Point — not retuned for MPU-6050's noisier sensor.
-This matches how Digital Level Tradesman (standard) is already a straight
-rebrand of Pro's app rather than a redesign, and avoids inventing
-unverified "better" numbers for a temporary product with no real hardware
-data behind it yet.
-
-**Known limitation, stated plainly:** the ±0.01° option is unlikely to
-hold steady on MPU-6050 — its noise floor is high enough relative to that
-threshold that the LEVEL label will likely flicker rather than settle,
-regardless of display smoothing. This is a real sensor limitation, not a
-bug. Worth field-testing alongside Tradesman itself before deciding
-whether that option should be removed, relabeled, or left as-is for this
-tier.
-
-## Files
-- `index.html` — the app. Full design rationale and the precision-tuning
-  decision are documented in the header comment.
-- `manifest.json`, `sw.js` — sw.js ships with `skipWaiting()`/`clients.claim()`
-  from the start.
-- `icon-192.png`, `icon-512.png` — carried over from Pro 4 Point unchanged.
-
-## Firmware
-Talks to the same MPU-6050 firmware already used by Digital Level
-Tradesman and Digital Level RV (`DigitalLevel_Firmware_v2.5.ino`) — BLE
-UUIDs and device name ("Level") unchanged, so no new firmware was needed.
-
-## Inherited, unchanged from Pro 4 Point
-Purely-relative advisory (no real geometry), Bubble Demo, Screw Demo, the
-Tare double-counting fix, and the service worker update fix.
 
 ## Known gap
 No `icons/` folder included — same as every other package in this family.
