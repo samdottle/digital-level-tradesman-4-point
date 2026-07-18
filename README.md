@@ -1,32 +1,41 @@
 # Digital Level Tradesman 4 Point — Web App
 
-**Version 1.1** · 2026-07-18 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
+**Version 1.2** · 2026-07-18 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
 
-## This is a clean restart from v1.0
-A previous v1.1–v1.4 line was discarded in full — a bundled set of
-changes made real problems worse and hard to isolate. This build starts
-fresh from v1.0 with **exactly one change**, deliberately isolated so it
-can be tested on its own before anything else is touched.
+Built on top of v1.1's isolated Tare fix — one additional isolated change.
+(v1.1's fix is not yet independently confirmed working; this connect-time
+issue may have been hit before Tare itself was tested.)
+
+## The problem
+With the unit genuinely level and flat, the bubble slams to maximum-left
+the instant the app connects, before any Tare or other interaction.
+Confirmed this is **not** a real-tilt display — the unit was level — so
+this is a software issue, not the app correctly showing a real reading.
+
+## Diagnosis (best available, not independently verified)
+I don't have hardware access to confirm this directly against the
+firmware. The best available explanation: the very first BLE packet after
+connecting was applied completely raw and unsmoothed, with no validation
+at all. If that first sample happens to be a transient/bad value — a
+known real-world characteristic of some IMUs right as they start
+streaming, before their own readings have settled — it went straight to
+the display unfiltered.
 
 ## The fix
-Tapping Tare did not settle the bubble at center — it flashed to 0 for
-one frame, then visibly slid back toward its old off-center position
-(reported as "moves the bubble left every time Tare is tapped").
+Buffer the first few packets (`STARTUP_SAMPLES = 3`) after connecting and
+seed the display with their average, instead of trusting any single one
+of them. Reset on disconnect too, so a reconnect gets its own fresh
+settling window.
 
-**Root cause:** Tare reset the displayed value (pitch/roll) to 0, but
-never reset the EMA smoothing accumulator feeding it. That accumulator
-kept holding its stale pre-tare value, so the very next real packet
-blended the firmware's now-corrected ~0 reading into the OLD value —
-e.g. `0.05×0 + 0.95×(-5) = -4.75` on the first packet alone — and it took
-dozens of packets to fully converge back to 0.
-
-**Fix:** reset the accumulator itself in the Tare handler, alongside the
-existing display reset.
+**This is a defensive fix, not a confirmed root cause.** If the
+left-jump on connect persists after this, that rules out this theory and
+points to something else — please report precisely if so, rather than
+assume this was the fix.
 
 ## Nothing else changed
-No smoothing-rate changes, no UI changes, no other fixes bundled in —
-confirmed by diff against v1.0, which shows exactly one added line. Please
-test this in isolation before any further changes are requested.
+Confirmed by diff against v1.1 — the only other change is resetting the
+new settling buffer on disconnect, which is required for the fix to work
+correctly on a second connection.
 
 ## Family naming (current)
 - **Digital Level RV** — MPU-6050, 4-point bull's-eye UI, RV market

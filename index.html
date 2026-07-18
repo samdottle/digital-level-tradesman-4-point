@@ -1,8 +1,35 @@
 <!DOCTYPE html>
 <!--
   Digital Level Tradesman 4 Point -- Web App
-  Version: 1.1
+  Version: 1.2
   Date:    2026-07-18
+
+  New in v1.2 (changes from v1.1) -- built on top of v1.1's isolated Tare
+  fix (not yet independently confirmed working -- this connect-time issue
+  may have been encountered before Tare itself was tested), one additional
+  isolated change:
+    - Reported: with the unit genuinely level and flat, the bubble slams
+      to maximum-left the instant the app connects, before any Tare or
+      other interaction. Confirmed this is NOT a real-tilt display (unit
+      was level), so this is a software issue, not the app correctly
+      showing a real reading.
+    - Cause (best available diagnosis, NOT independently verified against
+      the firmware -- I don't have hardware access to confirm this
+      directly): the very first BLE packet after connecting was applied
+      completely raw and unsmoothed, with no validation at all. If that
+      first sample happens to be a transient/bad value -- a known
+      real-world characteristic of some IMUs right as they start
+      streaming, before their own readings have settled -- it went
+      straight to the display unfiltered.
+    - Fix: buffer the first few packets (STARTUP_SAMPLES = 3) after
+      connecting and seed the display with their average, instead of
+      trusting any single one of them. Reset on disconnect too, so a
+      reconnect gets its own fresh settling window.
+    - This is a defensive fix addressing "never trust one unsmoothed
+      sample for something this visually prominent," not a confirmed root
+      cause. If the left-jump on connect persists after this, that would
+      rule out this theory and point to something else -- worth reporting
+      precisely if so.
 
   RESTARTED from v1.0. Versions 1.1-1.4 of a previous line were discarded
   in full at the user's request after a bundled set of changes made real
@@ -413,6 +440,8 @@ function App(){
   const[deviceName,setDeviceName]=useState('');
   const txRef=useRef(null),devRef=useRef(null);
   const epRef=useRef(null),erRef=useRef(null);
+  const startupBufRef=useRef([]);
+  const STARTUP_SAMPLES=3; // v1.2: samples averaged before trusting the reading after connect
 
   const[pitch,setPitch]=useState(0);
   const[roll,setRoll]=useState(0);
@@ -475,7 +504,24 @@ function App(){
     if(!m)return;
     const rp=parseFloat(m[1]);
     const rr=-parseFloat(m[2]); // hardware X axis is inverted relative to display convention
-    if(epRef.current===null){epRef.current=rp;erRef.current=rr;}
+    if(epRef.current===null){
+      // v1.2: the very first packet after connecting was being displayed
+      // completely raw and unsmoothed -- if that first sample happens to be
+      // a transient/bad value (reported: bubble slams to max-left on
+      // connect even with the unit level and flat), it went straight to
+      // the screen with no filtering at all. Buffer a few samples first and
+      // seed the display with their average instead of trusting any single
+      // one of them. This is a defensive fix, not a confirmed fix -- I
+      // can't verify from here whether the underlying cause is a firmware-
+      // side startup transient or something else; this protects against
+      // displaying it either way.
+      startupBufRef.current.push([rp,rr]);
+      if(startupBufRef.current.length<STARTUP_SAMPLES)return;
+      const n=startupBufRef.current.length;
+      epRef.current=startupBufRef.current.reduce((s,x)=>s+x[0],0)/n;
+      erRef.current=startupBufRef.current.reduce((s,x)=>s+x[1],0)/n;
+      startupBufRef.current=[];
+    }
     else{
       epRef.current=EMA_ALPHA*rp+(1-EMA_ALPHA)*epRef.current;
       erRef.current=EMA_ALPHA*rr+(1-EMA_ALPHA)*erRef.current;
@@ -486,7 +532,7 @@ function App(){
 
   const onDisc=useCallback(()=>{
     setIsConnected(false);txRef.current=null;
-    epRef.current=null;erRef.current=null;
+    epRef.current=null;erRef.current=null;startupBufRef.current=[];
     toast('Disconnected');
   },[toast]);
 
@@ -540,7 +586,7 @@ function App(){
             h('h1',{style:{fontSize:'22px',fontWeight:300,color:'white',margin:0,lineHeight:1}},
               'Digital Level Tradesman ',h('span',{style:{fontWeight:700,color:'#fbbf24'}},'4 Point')),
             h('p',{style:{fontSize:'10px',color:'#475569',margin:'2px 0 0'}},
-              'MPU-6050 \u00B7 ESP32 \u00B7 BLE \u00B7 v1.1')
+              'MPU-6050 \u00B7 ESP32 \u00B7 BLE \u00B7 v1.2')
           ),
           h('div',{style:{display:'flex',alignItems:'center',gap:'5px',padding:'4px 10px',
               borderRadius:'20px',border:`1px solid ${sc}40`,background:`${sc}12`,
@@ -720,7 +766,7 @@ function App(){
         h('div',{style:{textAlign:'center',fontSize:'11px',color:'#1e3a5f',paddingTop:'4px'}},
           h('p',{style:{margin:0}},'Arduino Nano ESP32 + MPU-6050 \u00B7 BLE Nordic UART'),
           h('p',{style:{margin:'3px 0 0'}},
-            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 v1.1`)
+            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 v1.2`)
         )
       )
     ),
