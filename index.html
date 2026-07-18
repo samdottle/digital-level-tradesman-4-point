@@ -2,8 +2,41 @@
 <!--
   Digital Level Tradesman 4 Point -- Web App
 
-  REVISION 3 (based on v1.0)
+  REVISION 4 (based on v1.0)
   Date: 2026-07-18
+
+  Sharper evidence found on closer comparison against DL Tradesman
+  (standard): that product sends these EXACT two commands
+  (CAL:0.00,0.00 and CAL:<value>) elsewhere in its own code -- a "Reset"
+  action and the end of its 2-position Calibration flow -- but never as
+  an automated pair. Its Calibration flow alone has a 3-second countdown
+  before anything else happens, followed by ~6 seconds of sample
+  collection before its own CAL: command is sent. Nothing in this product
+  family has ever tested a gap as short as Rev 3's 300ms between two
+  CAL:-family commands.
+
+  New in Rev 4 (changes from Rev 3):
+    - Raised the wall-clock delay between the clear write succeeding and
+      the app trusting subsequent packets from 300ms to 3000ms -- a floor
+      directly matched to the shortest known-good gap size actually
+      present in a working flow in the sibling product (its 3-second
+      countdown), not an arbitrary increase. This is the only change in
+      this revision.
+    - Verified the longer delay does not conflict with the existing
+      TARE_TIMEOUT_MS=3000 guard: that timer is only started AFTER this
+      new delay completes, not from the start of the tare tap, so it
+      cannot fire prematurely during the wait. Also verified the
+      double-tap guard still correctly blocks a second tap during the
+      now-longer wait (state is 'clearing' throughout, which the guard
+      checks against 'idle').
+    - Honesty note: this is a more strongly evidenced value than Rev 3's
+      300ms, but still a floor/starting point, not a measured
+      requirement. If this resolves it, the true minimum needed gap is
+      still unknown (could be shorter than 3s). If it does not resolve
+      it, that is meaningfully stronger evidence against the timing
+      theory in general than Rev 3's result alone, since this gap is now
+      backed by a known-good comparison point rather than an arbitrary
+      guess.
 
   New evidence: DL Tradesman (standard) does NOT show this problem --
   both pitch and roll zero correctly there. That product sends only ONE
@@ -733,7 +766,7 @@ function App(){
             h('h1',{style:{fontSize:'22px',fontWeight:300,color:'white',margin:0,lineHeight:1}},
               'Digital Level Tradesman ',h('span',{style:{fontWeight:700,color:'#fbbf24'}},'4 Point')),
             h('p',{style:{fontSize:'10px',color:'#475569',margin:'2px 0 0'}},
-              'MPU-6050 \u00B7 ESP32 \u00B7 BLE \u00B7 Rev 3 (based on v1.0)')
+              'MPU-6050 \u00B7 ESP32 \u00B7 BLE \u00B7 Rev 4 (based on v1.0)')
           ),
           h('div',{style:{display:'flex',alignItems:'center',gap:'5px',padding:'4px 10px',
               borderRadius:'20px',border:`1px solid ${sc}40`,background:`${sc}12`,
@@ -925,7 +958,19 @@ function App(){
               // (independent of how fast packets happen to be arriving) to
               // give the firmware time to have definitely applied the clear
               // before any subsequent packet is trusted as clean raw data.
-              await new Promise(r=>setTimeout(r,300));
+              // Rev 4: 300ms did not resolve it. Sharper evidence found on
+              // closer comparison: Tradesman (standard) sends these EXACT
+              // two commands (CAL:0.00,0.00 and CAL:<value>) elsewhere in
+              // its own code (a "Reset" action and the end of its 2-position
+              // Calibration flow, respectively) -- but NEVER as an automated
+              // pair. Its Calibration flow alone has a 3-second countdown
+              // before anything else happens. Nothing in this product family
+              // has ever tested a gap as short as 300ms between two
+              // CAL:-family commands. Raised to 3000ms -- a floor directly
+              // matched to the shortest known-good gap size actually present
+              // in a working flow in the sibling product, not an arbitrary
+              // increase.
+              await new Promise(r=>setTimeout(r,3000));
               tareStateRef.current='awaiting-raw';
               tareRawBufRef.current=[];
               clearTimeout(tareTimeoutRef.current);
@@ -949,7 +994,7 @@ function App(){
         h('div',{style:{textAlign:'center',fontSize:'11px',color:'#1e3a5f',paddingTop:'4px'}},
           h('p',{style:{margin:0}},'Arduino Nano ESP32 + MPU-6050 \u00B7 BLE Nordic UART'),
           h('p',{style:{margin:'3px 0 0'}},
-            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 Rev 3`)
+            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 Rev 4`)
         )
       )
     ),

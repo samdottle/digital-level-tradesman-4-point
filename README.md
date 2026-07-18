@@ -1,37 +1,40 @@
 # Digital Level Tradesman 4 Point — Web App
 
-**Revision 3** (based on v1.0) · 2026-07-18 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
+**Revision 4** (based on v1.0) · 2026-07-18 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
 
-## New evidence that shaped this revision
-DL Tradesman (standard) does **not** show this problem — both pitch and
-roll zero correctly there. That product sends only one command per tare
-(`TAR:`, additive); this product's redesign sends two (`CAL:0.00,0.00`
-clear, then `CAL:<value>` set). Same firmware in both cases, so this
-specifically implicates sending two commands close together in time, not
-command parsing being broken in general — and matches the earlier finding
-that the observed -2.90° was clean and consistent (meaning the clear had
-already fully taken effect by the time all raw samples were collected;
-it's specifically the second write that isn't landing).
+## Sharper evidence behind this revision
+Closer comparison against DL Tradesman (standard) found that product
+sends these **exact same two commands** — `CAL:0.00,0.00` and
+`CAL:<value>` — elsewhere in its own code (a "Reset" action, and the end
+of its 2-position Calibration flow), but **never as an automated pair**.
+Its Calibration flow alone has a 3-second countdown before anything else
+happens, followed by ~6 seconds of sample collection before its own
+`CAL:` command is sent. Nothing in this product family has ever tested a
+gap as short as Rev 3's 300ms between two `CAL:`-family commands.
 
-## What changed in Rev 3
-Added a real wall-clock delay (300ms) between the clear write succeeding
-and the app starting to trust subsequent packets as clean raw data. Rev
-2's `await` only confirmed the *browser* handed the first write to the
-BLE stack — it says nothing about whether the firmware's own processing
-loop has actually finished acting on it before a second write arrives.
-This delay is independent of packet rate, unlike relying on "however long
-3 packets happen to take."
+## What changed in Rev 4
+Raised the wall-clock delay between the clear write succeeding and the
+app trusting subsequent packets from 300ms to **3000ms** — a floor
+directly matched to the shortest known-good gap actually present in a
+working flow in the sibling product (its 3-second countdown), not an
+arbitrary increase. This is the only change in this revision.
+
+**Verified before shipping:**
+- The longer delay does not conflict with the existing
+  `TARE_TIMEOUT_MS=3000` guard — that timer only starts *after* this new
+  delay completes, so it cannot fire prematurely mid-wait.
+- The double-tap guard still correctly blocks a second tap during the
+  now-longer wait.
 
 ## Honesty about confidence level
-300ms is a reasoned guess, not a measured value — I don't have visibility
-into the firmware's actual loop timing.
-- If this resolves it, great.
-- If it helps but doesn't fully resolve it, the delay may just need to be
-  longer, which would still support the same diagnosis.
-- If it doesn't help at all, that undercuts the "commands too close
-  together" theory and points somewhere else entirely.
-
-Worth reporting precisely which of these happens.
+This is a more strongly evidenced value than Rev 3's 300ms, but it's
+still a floor/starting point, not a measured requirement.
+- **If this resolves it** — the true minimum needed gap is still unknown
+  (could be shorter than 3s).
+- **If it does not resolve it** — that's meaningfully stronger evidence
+  against the timing theory in general than Rev 3's result alone, since
+  this gap is now backed by a known-good comparison point rather than an
+  arbitrary guess.
 
 ## Family naming (current)
 - **Digital Level RV** — MPU-6050, 4-point bull's-eye UI, RV market
