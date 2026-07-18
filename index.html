@@ -1,35 +1,64 @@
 <!DOCTYPE html>
 <!--
   Digital Level Tradesman 4 Point -- Web App
-  Version: 1.2
-  Date:    2026-07-18
 
-  New in v1.2 (changes from v1.1) -- built on top of v1.1's isolated Tare
-  fix (not yet independently confirmed working -- this connect-time issue
-  may have been encountered before Tare itself was tested), one additional
-  isolated change:
-    - Reported: with the unit genuinely level and flat, the bubble slams
-      to maximum-left the instant the app connects, before any Tare or
-      other interaction. Confirmed this is NOT a real-tilt display (unit
-      was level), so this is a software issue, not the app correctly
-      showing a real reading.
-    - Cause (best available diagnosis, NOT independently verified against
-      the firmware -- I don't have hardware access to confirm this
-      directly): the very first BLE packet after connecting was applied
-      completely raw and unsmoothed, with no validation at all. If that
-      first sample happens to be a transient/bad value -- a known
-      real-world characteristic of some IMUs right as they start
-      streaming, before their own readings have settled -- it went
-      straight to the display unfiltered.
-    - Fix: buffer the first few packets (STARTUP_SAMPLES = 3) after
-      connecting and seed the display with their average, instead of
-      trusting any single one of them. Reset on disconnect too, so a
-      reconnect gets its own fresh settling window.
-    - This is a defensive fix addressing "never trust one unsmoothed
-      sample for something this visually prominent," not a confirmed root
-      cause. If the left-jump on connect persists after this, that would
-      rule out this theory and point to something else -- worth reporting
-      precisely if so.
+  REVISION 1 (based on v1.0)
+  Date: 2026-07-18
+
+  Switching to "Revision" (Rev N) instead of "Version" for this ongoing
+  Tare troubleshooting effort, at the user's request -- the prior
+  discarded v1.1-v1.4 line, plus the two further v1.1/v1.2 iterations
+  built after that restart, made "version numbers" themselves a source of
+  confusion. Revisions are NOT confirmed releases; once the Tare problem
+  is fully resolved, the final working revision will be consolidated into
+  a proper "Version 1.1". Confined to Digital Level Tradesman 4 Point only
+  for now -- no other product touched.
+
+  This Rev 1 is built on the file most recently delivered as "v1.2" (the
+  connect-time startup-settling fix, itself built on "v1.1", the isolated
+  Tare-accumulator-reset fix -- both from the clean restart after
+  discarding the original v1.1-v1.4 line). Full history preserved below.
+
+  New in Rev 1 (changes from the file previously called v1.2):
+    - Redesigned Tare. Previously (see the v1.1 entry below) Tare sent
+      TAR:<displayed pitch>,<displayed roll> -- the firmware ADDS this to
+      whatever offset it already has stored (pitchOffset +=, confirmed
+      directly against the firmware source). That's the mathematically
+      necessary approach GIVEN that the app only ever sees the already-
+      offset-corrected reading, never the sensor's true raw value -- but
+      it means any past display error, from any cause, got permanently
+      added into the firmware's stored (flash-persisted) offset, with no
+      way to recover except tapping Tare again from a since-corrected
+      reading.
+    - Fix: Tare now clears the firmware's offset first (CAL:0.00,0.00,
+      which the firmware SETS rather than adds -- confirmed directly
+      against the firmware source), waits for a few clean RAW samples
+      once that offset is wiped, then sets the offset directly from that
+      observation (CAL:, absolute) instead of adding to anything. This
+      can't compound a bad prior offset, whatever caused it, because
+      nothing from before the clear ever factors into the new value.
+    - Three safeguards added around the new async clear/observe/set
+      sequence, since none of this can be verified against real BLE
+      timing from here:
+        1. Timeout (TARE_TIMEOUT_MS = 3000ms): if no raw packet arrives
+           after clearing, abort back to idle instead of leaving Tare
+           permanently stuck waiting.
+        2. Double-tap guard: tapping Tare again while a sequence is
+           already in progress is ignored (with a toast), rather than
+           starting a second overlapping sequence.
+        3. Disconnect guard: disconnecting mid-sequence resets the tare
+           state and clears its timeout, so a future reconnect can't
+           inherit stale mid-tare state.
+    - Honesty note, stated plainly: the underlying math (clear before set
+      beats add-to-whatever's-already-there) is verified correct on paper
+      and against the firmware source. The async/timing mechanics of the
+      three safeguards above are NOT verified against real hardware --
+      this needs real-device testing before being trusted as fully
+      working, same caveat as the v1.2 connect-time fix below.
+
+  ============================================================
+  HISTORY (prior to this revision):
+  ============================================================
 
   RESTARTED from v1.0. Versions 1.1-1.4 of a previous line were discarded
   in full at the user's request after a bundled set of changes made real
@@ -443,6 +472,17 @@ function App(){
   const startupBufRef=useRef([]);
   const STARTUP_SAMPLES=3; // v1.2: samples averaged before trusting the reading after connect
 
+  // Rev 1: redesigned Tare -- clear the firmware's stored offset first
+  // (CAL:0.00,0.00), observe a few CLEAN raw samples, then set the offset
+  // directly from that observation (CAL:, absolute) instead of adding to
+  // whatever offset was already stored (TAR:, relative). This can't
+  // compound an already-wrong offset, whatever caused it.
+  const tareStateRef=useRef('idle'); // 'idle' | 'awaiting-raw'
+  const tareRawBufRef=useRef([]);
+  const tareTimeoutRef=useRef(null);
+  const TARE_RAW_SAMPLES=3;
+  const TARE_TIMEOUT_MS=3000; // abort back to idle if no raw packet arrives -- guards against a lost/dropped response leaving Tare permanently stuck
+
   const[pitch,setPitch]=useState(0);
   const[roll,setRoll]=useState(0);
 
@@ -504,6 +544,27 @@ function App(){
     if(!m)return;
     const rp=parseFloat(m[1]);
     const rr=-parseFloat(m[2]); // hardware X axis is inverted relative to display convention
+
+    // Rev 1: mid-tare-sequence packets are diverted here entirely -- they do
+    // NOT feed the normal EMA/display path below, so nothing flashes an
+    // uncorrected raw reading on screen during the brief clear/observe
+    // window. See the Tare button's onClick for the sequence this completes.
+    if(tareStateRef.current==='awaiting-raw'){
+      tareRawBufRef.current.push([rp,rr]);
+      if(tareRawBufRef.current.length<TARE_RAW_SAMPLES)return;
+      const n=tareRawBufRef.current.length;
+      const avgP=tareRawBufRef.current.reduce((s,x)=>s+x[0],0)/n;
+      const avgR=tareRawBufRef.current.reduce((s,x)=>s+x[1],0)/n;
+      clearTimeout(tareTimeoutRef.current);
+      send(`CAL:${avgP.toFixed(2)},${avgR.toFixed(2)}`); // absolute set, from a clean observation -- can't compound a bad prior offset
+      tareStateRef.current='idle';
+      tareRawBufRef.current=[];
+      epRef.current=0;erRef.current=0;
+      setPitch(0);setRoll(0);
+      toast('Tared \u2014 display zeroed','success');
+      return;
+    }
+
     if(epRef.current===null){
       // v1.2: the very first packet after connecting was being displayed
       // completely raw and unsmoothed -- if that first sample happens to be
@@ -528,11 +589,17 @@ function App(){
     }
     setPitch(+(epRef.current).toFixed(2));
     setRoll( +(erRef.current).toFixed(2));
-  },[]);
+  },[send,toast]);
 
   const onDisc=useCallback(()=>{
     setIsConnected(false);txRef.current=null;
     epRef.current=null;erRef.current=null;startupBufRef.current=[];
+    // Rev 1: guard against disconnecting mid-tare-sequence -- without this,
+    // a stale 'awaiting-raw' state (and its pending timeout) would carry
+    // into a future reconnect and could intercept normal data as if it
+    // were still part of an old tare attempt.
+    clearTimeout(tareTimeoutRef.current);
+    tareStateRef.current='idle';tareRawBufRef.current=[];
     toast('Disconnected');
   },[toast]);
 
@@ -586,7 +653,7 @@ function App(){
             h('h1',{style:{fontSize:'22px',fontWeight:300,color:'white',margin:0,lineHeight:1}},
               'Digital Level Tradesman ',h('span',{style:{fontWeight:700,color:'#fbbf24'}},'4 Point')),
             h('p',{style:{fontSize:'10px',color:'#475569',margin:'2px 0 0'}},
-              'MPU-6050 \u00B7 ESP32 \u00B7 BLE \u00B7 v1.2')
+              'MPU-6050 \u00B7 ESP32 \u00B7 BLE \u00B7 Rev 1 (based on v1.0)')
           ),
           h('div',{style:{display:'flex',alignItems:'center',gap:'5px',padding:'4px 10px',
               borderRadius:'20px',border:`1px solid ${sc}40`,background:`${sc}12`,
@@ -734,27 +801,34 @@ function App(){
         // Tare
         h('button',{
             onClick:()=>{
-              if(isConnected){
-                // v3.7: send the delta to the firmware (single source of truth for
-                // the offset, also keeps standalone/no-BLE mode correctly tared)
-                // and show an optimistic 0.00 for this frame. Do NOT also keep a
-                // local app-side offset -- the firmware's next telemetry packet
-                // already reflects the correction, so subtracting it again here
-                // applied it twice and made the display overshoot to the negative
-                // of the pre-tare reading instead of settling at 0.00.
-                // v1.1: ALSO reset the EMA accumulator (epRef/erRef), not just the
-                // displayed state. Without this, the accumulator kept holding its
-                // stale pre-tare value -- so the very next real packet blended the
-                // firmware's now-corrected ~0 reading into that stale value (e.g.
-                // 0.05*0 + 0.95*(-5) = -4.75), and the bubble visibly slid back
-                // toward its old off-center position instead of staying at 0. This
-                // is the ONLY change in this version, isolated deliberately so it
-                // can be tested on its own.
-                send(`TAR:${pitch.toFixed(2)},${roll.toFixed(2)}`);
-                epRef.current=0;erRef.current=0;
-                setPitch(0);setRoll(0);
-                toast('Tared \u2014 display zeroed');
-              }else toast('Not connected \u2014 tare not applied');
+              if(!isConnected){toast('Not connected \u2014 tare not applied');return;}
+              // Rev 1: redesigned. Previously sent TAR: (adds the current
+              // DISPLAYED value to whatever offset the firmware already had
+              // stored) -- correct math IF the displayed value was trustworthy,
+              // but that meant any past display error got permanently added
+              // into the firmware's stored (flash-persisted) offset, with no
+              // way to recover except tapping Tare again from a correct
+              // reading. Now: clear the firmware's offset first (CAL:0,0),
+              // observe a few CLEAN raw samples with that offset wiped, then
+              // set the offset directly from that observation (CAL:, absolute)
+              // -- this can't compound a bad prior offset, whatever caused it.
+              if(tareStateRef.current!=='idle'){
+                toast('Tare already in progress\u2026');return; // guard: ignore taps mid-sequence
+              }
+              tareStateRef.current='awaiting-raw';
+              tareRawBufRef.current=[];
+              send('CAL:0.00,0.00');
+              toast('Taring\u2026');
+              clearTimeout(tareTimeoutRef.current);
+              tareTimeoutRef.current=setTimeout(()=>{
+                // guard: if no raw packet arrives (dropped BLE packet, unit
+                // busy, etc.), don't leave Tare stuck forever -- abort back
+                // to idle so the next tap can start a fresh attempt.
+                if(tareStateRef.current==='awaiting-raw'){
+                  tareStateRef.current='idle';tareRawBufRef.current=[];
+                  toast('Tare timed out \u2014 no response from unit, try again','error');
+                }
+              },TARE_TIMEOUT_MS);
             },
             style:{width:'100%',padding:'13px',borderRadius:'14px',
               border:'1px solid rgba(251,191,36,0.35)',
@@ -766,7 +840,7 @@ function App(){
         h('div',{style:{textAlign:'center',fontSize:'11px',color:'#1e3a5f',paddingTop:'4px'}},
           h('p',{style:{margin:0}},'Arduino Nano ESP32 + MPU-6050 \u00B7 BLE Nordic UART'),
           h('p',{style:{margin:'3px 0 0'}},
-            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 v1.2`)
+            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 Rev 1`)
         )
       )
     ),

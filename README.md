@@ -1,41 +1,52 @@
 # Digital Level Tradesman 4 Point — Web App
 
-**Version 1.2** · 2026-07-18 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
+**Revision 1** (based on v1.0) · 2026-07-18 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
 
-Built on top of v1.1's isolated Tare fix — one additional isolated change.
-(v1.1's fix is not yet independently confirmed working; this connect-time
-issue may have been hit before Tare itself was tested.)
+## Why "Revision" instead of "Version"
+Switching to Rev N labeling for this ongoing Tare troubleshooting effort,
+at your request — the discarded v1.1–v1.4 line, plus the two further
+v1.1/v1.2 iterations built after that restart, made version numbers
+themselves a source of confusion. Revisions are **not** confirmed
+releases. Once the Tare problem is fully resolved, the final working
+revision will be consolidated into a proper Version 1.1.
 
-## The problem
-With the unit genuinely level and flat, the bubble slams to maximum-left
-the instant the app connects, before any Tare or other interaction.
-Confirmed this is **not** a real-tilt display — the unit was level — so
-this is a software issue, not the app correctly showing a real reading.
+**Confined to Digital Level Tradesman 4 Point only** — no other product
+in the family touched by this work yet.
 
-## Diagnosis (best available, not independently verified)
-I don't have hardware access to confirm this directly against the
-firmware. The best available explanation: the very first BLE packet after
-connecting was applied completely raw and unsmoothed, with no validation
-at all. If that first sample happens to be a transient/bad value — a
-known real-world characteristic of some IMUs right as they start
-streaming, before their own readings have settled — it went straight to
-the display unfiltered.
+## What changed in Rev 1: redesigned Tare
+Previously, Tare sent `TAR:<displayed pitch>,<displayed roll>` — the
+firmware **adds** this to whatever offset it already has stored
+(confirmed directly against the firmware source: `pitchOffset +=`).
+That's the mathematically necessary approach given that the app only
+ever sees the already-corrected reading, never the sensor's true raw
+value — but it means any past display error, from any cause, got
+permanently added into the firmware's stored (flash-persisted) offset,
+with no way to recover except tapping Tare again from a since-corrected
+reading.
 
-## The fix
-Buffer the first few packets (`STARTUP_SAMPLES = 3`) after connecting and
-seed the display with their average, instead of trusting any single one
-of them. Reset on disconnect too, so a reconnect gets its own fresh
-settling window.
+**Fix:** Tare now clears the firmware's offset first (`CAL:0.00,0.00`,
+which the firmware **sets** rather than adds — also confirmed against
+the firmware source), waits for a few clean raw samples once that offset
+is wiped, then sets the offset directly from that observation
+(`CAL:`, absolute) instead of adding to anything. This can't compound a
+bad prior offset, whatever caused it — nothing from before the clear
+factors into the new value.
 
-**This is a defensive fix, not a confirmed root cause.** If the
-left-jump on connect persists after this, that rules out this theory and
-points to something else — please report precisely if so, rather than
-assume this was the fix.
+## Three safeguards around the new async sequence
+None of this can be verified against real BLE timing from here, so:
+1. **Timeout** (3000ms) — if no raw packet arrives after clearing, abort
+   back to idle instead of leaving Tare permanently stuck.
+2. **Double-tap guard** — tapping Tare again mid-sequence is ignored
+   (with a toast), rather than starting an overlapping second sequence.
+3. **Disconnect guard** — disconnecting mid-sequence resets the tare
+   state, so a future reconnect can't inherit stale mid-tare state.
 
-## Nothing else changed
-Confirmed by diff against v1.1 — the only other change is resetting the
-new settling buffer on disconnect, which is required for the fix to work
-correctly on a second connection.
+## Honesty about confidence level
+The underlying math (clear-then-set beats add-to-whatever's-already-there)
+is verified correct on paper and against the actual firmware source code.
+The async/timing mechanics of the three safeguards above are **not**
+verified against real hardware — this needs real-device testing before
+being trusted as fully working.
 
 ## Family naming (current)
 - **Digital Level RV** — MPU-6050, 4-point bull's-eye UI, RV market
