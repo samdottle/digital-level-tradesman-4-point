@@ -1,44 +1,8 @@
 <!DOCTYPE html>
 <!--
   Digital Level Tradesman 4 Point -- Web App
-  Version: 1.2
-  Date:    2026-07-18
-
-  New in v1.2 (changes from v1.1):
-    - Bubble felt very slow to respond while actually connected (though
-      snappy in Bubble Demo, which bypasses the sensor path entirely --
-      that comparison is what isolated the cause). Root cause: EMA_ALPHA
-      0.05 alone. Settling time math: reaching 95% of a real step change
-      takes ~58 samples, 99% takes ~90 samples -- several seconds at a
-      typical streaming rate, and purely a smoothing artifact, not a
-      hardware or noise problem.
-    - Fix: adaptive two-rate smoothing, applied independently per axis
-      (pitch and roll can each be mid-adjustment while the other is
-      settled, e.g. turning one screw mostly changes one axis). While a
-      new sample differs from the current smoothed value by more than
-      ADAPT_THRESHOLD_DEG (0.15 deg), use EMA_ALPHA_FAST (0.30) to catch
-      up quickly; once close to settled, drop back to the original
-      EMA_ALPHA (0.05) for the same low-jitter stability as before. This
-      does NOT change steady-state accuracy -- a settled EMA converges to
-      the same mean regardless of alpha -- it only changes how long it
-      takes to get there.
-    - ADAPT_THRESHOLD_DEG (0.15) is a reasoned starting estimate (set
-      comfortably above MPU-6050's expected per-sample noise scatter, well
-      below a typical real screw-turn change), not a value verified
-      against real MPU-6050 noise data. Worth field-tuning once tested
-      alongside Tradesman (standard), which shares the same sensor and
-      could benefit from the same technique.
-
-  New in v1.1 (changes from v1.0):
-    - Bubble: removed the fixed-offset "glossy highlight" dot that was
-      previously drawn inside the moving bubble (cx:-5,cy:-5 relative to
-      the bubble's own center) -- purely decorative, not tied to pitch/
-      roll in any way, and not useful for this application per user
-      feedback. Replaced with a small fixed white dot at the true center
-      of the bull's-eye (0,0), drawn UNDER the bubble in the SVG stacking
-      order -- a stationary aim point independent of the bubble's
-      position, so it's visually clear exactly where "centered" is, and
-      it naturally disappears under the bubble once actually centered.
+  Version: 1.0
+  Date:    2026-07-16
 
   First release. Digital Level Pro 4 Point's bull's-eye + 4-point advisory
   UI and leveling-screw workflow, running on MPU-6050 instead of the
@@ -115,22 +79,6 @@ const SERVICE_UUID='6e400001-b5a3-f393-e0a9-e50e24dcca9e';
 const TX_UUID     ='6e400002-b5a3-f393-e0a9-e50e24dcca9e';
 const RX_UUID     ='6e400003-b5a3-f393-e0a9-e50e24dcca9e';
 const EMA_ALPHA   = 0.05;  // matches Digital Level Pro's smoothing -- precision tier, not RV's fast-response 0.15
-// v1.2: adaptive two-rate smoothing. A single fixed alpha can't give both
-// fast response AND low jitter -- those are the same dial, not two
-// independent things. Instead: react fast while the reading is still
-// catching up to a real change (e.g. someone turning a leveling screw),
-// then drop back to the slow, stable EMA_ALPHA once it's actually close
-// to settled. This does NOT change steady-state accuracy (a settled EMA
-// converges to the same mean regardless of alpha) -- it only changes how
-// long it takes to get there.
-//   ADAPT_THRESHOLD_DEG: set comfortably above MPU-6050's expected sample-
-//   to-sample noise scatter (so normal noise doesn't spuriously trigger
-//   fast mode and cause jitter) and well below a typical real screw-turn
-//   change. This is a reasoned starting estimate, not a value verified
-//   against real MPU-6050 noise data -- worth field-tuning once tested
-//   alongside Tradesman (standard), which shares the same sensor.
-const EMA_ALPHA_FAST      = 0.30;
-const ADAPT_THRESHOLD_DEG = 0.15;
 const THRESHOLD_OPTIONS = [0.01,0.05,0.10]; // matches Digital Level Pro's three options exactly
 const MAX_DEG     = 5;      // matches Digital Level Pro's bubble-tube scale, for visual consistency across the family
 // PLACEHOLDER -- purely-relative demo scale factors (not real machine geometry; per design decision,
@@ -343,16 +291,12 @@ function BullsEye({pitch,roll,threshold,isLevel,draggable,onDrag}){
           stroke:'rgba(255,255,255,0.15)',strokeWidth:1}),
       h('line',{x1:0,y1:-R*0.85,x2:0,y2:R*0.85,
           stroke:'rgba(255,255,255,0.15)',strokeWidth:1}),
-      // Fixed center target -- stationary aim point, independent of the
-      // bubble's position, so it's clear exactly where "centered" is.
-      // Drawn before the bubble group, so the bubble visually covers it
-      // once it's actually centered.
-      h('circle',{cx:0,cy:0,r:3,fill:'#ffffff',fillOpacity:0.9}),
       h('g',{style:{transition:draggable?'none':'transform 0.05s ease-out'},
           transform:`translate(${bx},${by})`},
         h('circle',{cx:0,cy:0,r:20,fill:'rgba(0,0,0,0.35)'}),
         h('circle',{cx:0,cy:0,r:18,fill:bCol,fillOpacity:0.7,
-            stroke:bCol,strokeWidth:2})
+            stroke:bCol,strokeWidth:2}),
+        h('circle',{cx:-5,cy:-5,r:5,fill:'rgba(255,255,255,0.4)'})
       )
     )
   );
@@ -507,10 +451,8 @@ function App(){
     const rr=-parseFloat(m[2]); // hardware X axis is inverted relative to display convention
     if(epRef.current===null){epRef.current=rp;erRef.current=rr;}
     else{
-      const alphaP = Math.abs(rp-epRef.current) > ADAPT_THRESHOLD_DEG ? EMA_ALPHA_FAST : EMA_ALPHA;
-      const alphaR = Math.abs(rr-erRef.current) > ADAPT_THRESHOLD_DEG ? EMA_ALPHA_FAST : EMA_ALPHA;
-      epRef.current=alphaP*rp+(1-alphaP)*epRef.current;
-      erRef.current=alphaR*rr+(1-alphaR)*erRef.current;
+      epRef.current=EMA_ALPHA*rp+(1-EMA_ALPHA)*epRef.current;
+      erRef.current=EMA_ALPHA*rr+(1-EMA_ALPHA)*erRef.current;
     }
     setPitch(+(epRef.current).toFixed(2));
     setRoll( +(erRef.current).toFixed(2));
@@ -572,7 +514,7 @@ function App(){
             h('h1',{style:{fontSize:'22px',fontWeight:300,color:'white',margin:0,lineHeight:1}},
               'Digital Level Tradesman ',h('span',{style:{fontWeight:700,color:'#fbbf24'}},'4 Point')),
             h('p',{style:{fontSize:'10px',color:'#475569',margin:'2px 0 0'}},
-              'MPU-6050 \u00B7 ESP32 \u00B7 BLE \u00B7 v1.2')
+              'MPU-6050 \u00B7 ESP32 \u00B7 BLE \u00B7 v1.0')
           ),
           h('div',{style:{display:'flex',alignItems:'center',gap:'5px',padding:'4px 10px',
               borderRadius:'20px',border:`1px solid ${sc}40`,background:`${sc}12`,
@@ -743,7 +685,7 @@ function App(){
         h('div',{style:{textAlign:'center',fontSize:'11px',color:'#1e3a5f',paddingTop:'4px'}},
           h('p',{style:{margin:0}},'Arduino Nano ESP32 + MPU-6050 \u00B7 BLE Nordic UART'),
           h('p',{style:{margin:'3px 0 0'}},
-            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 v1.2`)
+            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 v1.0`)
         )
       )
     ),
