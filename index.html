@@ -2,8 +2,35 @@
 <!--
   Digital Level Tradesman 4 Point -- Web App
 
-  REVISION 2 (based on v1.0)
+  REVISION 3 (based on v1.0)
   Date: 2026-07-18
+
+  New evidence: DL Tradesman (standard) does NOT show this problem --
+  both pitch and roll zero correctly there. That product sends only ONE
+  command per tare (TAR:, additive); this product's redesign sends TWO
+  (CAL:0.00,0.00 clear, then CAL:<value> set). Same firmware in both
+  cases, so this specifically implicates sending two commands close
+  together in time, not command parsing being broken in general -- and
+  matches the earlier finding that the observed -2.90 was clean and
+  consistent (meaning the clear had already fully taken effect by the
+  time all raw samples were collected; it's specifically the SECOND write
+  that isn't landing).
+
+  New in Rev 3 (changes from Rev 2):
+    - Added a real wall-clock delay (300ms) between the clear write
+      succeeding and the app starting to trust subsequent packets as
+      clean raw data. Rev 2's await only confirmed the BROWSER handed the
+      first write to the BLE stack -- it says nothing about whether the
+      firmware's own processing loop has actually finished acting on it
+      before a second write arrives. This is independent of packet rate,
+      unlike relying on "however long 3 packets happen to take."
+    - Honesty note: 300ms is a reasoned guess, not a measured value -- I
+      don't have visibility into the firmware's actual loop timing. If
+      this resolves it, great; if it helps but doesn't fully resolve it,
+      the delay may just need to be longer, which would still support the
+      same diagnosis. If it doesn't help at all, that would undercut the
+      "commands too close together" theory and point somewhere else
+      entirely -- worth reporting precisely either way.
 
   Reported (against Rev 1): with the unit freshly tared offline, connect
   shows the bubble centered correctly. Tapping Tare then makes it drift to
@@ -706,7 +733,7 @@ function App(){
             h('h1',{style:{fontSize:'22px',fontWeight:300,color:'white',margin:0,lineHeight:1}},
               'Digital Level Tradesman ',h('span',{style:{fontWeight:700,color:'#fbbf24'}},'4 Point')),
             h('p',{style:{fontSize:'10px',color:'#475569',margin:'2px 0 0'}},
-              'MPU-6050 \u00B7 ESP32 \u00B7 BLE \u00B7 Rev 2 (based on v1.0)')
+              'MPU-6050 \u00B7 ESP32 \u00B7 BLE \u00B7 Rev 3 (based on v1.0)')
           ),
           h('div',{style:{display:'flex',alignItems:'center',gap:'5px',padding:'4px 10px',
               borderRadius:'20px',border:`1px solid ${sc}40`,background:`${sc}12`,
@@ -885,6 +912,20 @@ function App(){
                 toast('Tare failed \u2014 could not clear offset, try again','error');
                 return;
               }
+              // Rev 3: reported that DL Tradesman (standard), which sends
+              // only ONE command per tare (TAR:, additive), zeroes reliably
+              // -- while this product's two-command clear-then-set sequence
+              // does not. Same firmware in both cases, so this points at
+              // sending two commands close together specifically, not at
+              // command parsing being broken in general. Awaiting the first
+              // write (Rev 2) only confirms the BROWSER handed it to the BLE
+              // stack -- it says nothing about whether the firmware's own
+              // processing loop has actually finished acting on it before
+              // the next write arrives. Add a real wall-clock pause here
+              // (independent of how fast packets happen to be arriving) to
+              // give the firmware time to have definitely applied the clear
+              // before any subsequent packet is trusted as clean raw data.
+              await new Promise(r=>setTimeout(r,300));
               tareStateRef.current='awaiting-raw';
               tareRawBufRef.current=[];
               clearTimeout(tareTimeoutRef.current);
@@ -908,7 +949,7 @@ function App(){
         h('div',{style:{textAlign:'center',fontSize:'11px',color:'#1e3a5f',paddingTop:'4px'}},
           h('p',{style:{margin:0}},'Arduino Nano ESP32 + MPU-6050 \u00B7 BLE Nordic UART'),
           h('p',{style:{margin:'3px 0 0'}},
-            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 Rev 2`)
+            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 Rev 3`)
         )
       )
     ),
