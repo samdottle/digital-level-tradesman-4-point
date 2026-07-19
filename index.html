@@ -33,6 +33,12 @@
   earlier in this investigation (also present in all four sibling
   products, only fixed here so far).
 
+  New in Rev 8 (changes from Rev 7):
+    - UI only: replaced the center dot with a compact precision crosshair.
+    - The reticle is drawn above the moving bubble, so the exact bullseye
+      remains visible during fine adjustment. No BLE, tare, smoothing,
+      calibration, or firmware-facing behavior was changed.
+
   New in Rev 7 (changes from Rev 6):
     - Roll is now negated back (undoing the display-side negation)
       specifically when constructing the TAR: command's roll value, so
@@ -587,17 +593,21 @@ function BullsEye({pitch,roll,threshold,isLevel,draggable,onDrag}){
           stroke:'rgba(255,255,255,0.15)',strokeWidth:1}),
       h('line',{x1:0,y1:-R*0.85,x2:0,y2:R*0.85,
           stroke:'rgba(255,255,255,0.15)',strokeWidth:1}),
-      // Fixed center target -- stationary aim point, independent of the
-      // bubble's position, so it's clear exactly where "centered" is.
-      // Drawn before the bubble group, so the bubble visually covers it
-      // once it's actually centered.
-      h('circle',{cx:0,cy:0,r:3,fill:'#ffffff',fillOpacity:0.9}),
       h('g',{style:{transition:draggable?'none':'transform 0.05s ease-out'},
           transform:`translate(${bx},${by})`},
         h('circle',{cx:0,cy:0,r:20,fill:'rgba(0,0,0,0.35)'}),
         h('circle',{cx:0,cy:0,r:18,fill:bCol,fillOpacity:0.7,
             stroke:bCol,strokeWidth:2})
-      )
+      ),
+      // Rev 8 precision center reticle. Drawn after the moving bubble so
+      // the exact bullseye remains visible while making fine adjustments.
+      h('line',{x1:-8,y1:0,x2:8,y2:0,
+          stroke:'rgba(255,255,255,0.86)',strokeWidth:1.5,
+          strokeLinecap:'round'}),
+      h('line',{x1:0,y1:-8,x2:0,y2:8,
+          stroke:'rgba(255,255,255,0.86)',strokeWidth:1.5,
+          strokeLinecap:'round'}),
+      h('circle',{cx:0,cy:0,r:1.8,fill:'#ffffff',fillOpacity:0.95})
     )
   );
 }
@@ -858,7 +868,7 @@ function App(){
             h('h1',{style:{fontSize:'22px',fontWeight:300,color:'white',margin:0,lineHeight:1}},
               'Digital Level Tradesman ',h('span',{style:{fontWeight:700,color:'#fbbf24'}},'4 Point')),
             h('p',{style:{fontSize:'10px',color:'#475569',margin:'2px 0 0'}},
-              'MPU-6050 \u00B7 ESP32 \u00B7 BLE \u00B7 Rev 7 (based on v1.0)')
+              'MPU-6050 \u00B7 ESP32 \u00B7 BLE \u00B7 Rev 8 (based on Rev 7 Gold Standard)')
           ),
           h('div',{style:{display:'flex',alignItems:'center',gap:'5px',padding:'4px 10px',
               borderRadius:'20px',border:`1px solid ${sc}40`,background:`${sc}12`,
@@ -1083,7 +1093,7 @@ function App(){
         h('div',{style:{textAlign:'center',fontSize:'11px',color:'#1e3a5f',paddingTop:'4px'}},
           h('p',{style:{margin:0}},'Arduino Nano ESP32 + MPU-6050 \u00B7 BLE Nordic UART'),
           h('p',{style:{margin:'3px 0 0'}},
-            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 Rev 7`)
+            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 Rev 8`)
         )
       )
     ),

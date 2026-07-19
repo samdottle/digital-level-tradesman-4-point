@@ -32,6 +32,10 @@ bug, not fixed there yet. Same pattern as the EMA-accumulator bug found
 earlier in this investigation (also present in all four sibling products,
 only fixed in this one so far).
 
+## Rev 8 — Precision Crosshair
+
+Rev 8 is based directly on the verified working Rev 7 Gold Standard. It makes one UI-only change: the bull's-eye now has a compact white crosshair and center point drawn above the moving bubble, keeping the exact target visible during fine adjustment. No BLE, tare, smoothing, calibration, or firmware-facing logic was changed.
+
 ## What changed in Rev 7
 Roll is now negated back — undoing the display-side negation —
 specifically when constructing the `TAR:` command's roll value, so the
