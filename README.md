@@ -1,3 +1,9 @@
+# Digital Level Tradesman 4 Point — Revision 8
+
+Gold Standard Rev 7 with one isolated UI change: a precision crosshair is drawn inside the moving bubble so it aligns with the fixed bullseye crosshair when level.
+
+No BLE, tare, calibration, smoothing, or firmware-facing logic was changed.
+
 # Digital Level Tradesman 4 Point — Web App
 
 **Revision 7** (based on v1.0) · 2026-07-19 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
@@ -31,10 +37,6 @@ unguarded negation** and sends `TAR:` the same way — very likely the same
 bug, not fixed there yet. Same pattern as the EMA-accumulator bug found
 earlier in this investigation (also present in all four sibling products,
 only fixed in this one so far).
-
-## Rev 8 — Precision Crosshair
-
-Rev 8 is based directly on the verified working Rev 7 Gold Standard. It makes one UI-only change: the bull's-eye now has a compact white crosshair and center point drawn above the moving bubble, keeping the exact target visible during fine adjustment. No BLE, tare, smoothing, calibration, or firmware-facing logic was changed.
 
 ## What changed in Rev 7
 Roll is now negated back — undoing the display-side negation —
