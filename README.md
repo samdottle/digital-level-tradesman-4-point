@@ -1,49 +1,55 @@
 # Digital Level Tradesman 4 Point — Web App
 
-**Revision 5** (based on v1.0) · 2026-07-18 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
+**Revision 7** (based on v1.0) · 2026-07-19 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
 
-## What was reported against Rev 4
-On tap, the bubble drifts *slowly* left (during the 3-second clear/delay
-window), then *snaps* to center, then drifts *slowly* left again, back to
-the same value as before.
+## A real, verified bug — not another timing theory
+A separate AI (ChatGPT) reviewed the handoff document and, instead of
+proposing another timing experiment, questioned whether the receive-side
+coordinate negation might be inconsistently applied between the display
+path and the command-construction path. This was checked rigorously —
+worked out algebraically and verified numerically against the firmware's
+actual transmit formula and `TAR:` handler — and confirmed as a real,
+previously undiscovered bug, independent of everything tried in
+Revisions 1–6.
 
-## Diagnosis
-Traced this precisely. Phases 1 and 3 are both honest reflections of real
-incoming packets under normal EMA smoothing — nothing wrong with either.
-**Phase 2 (the snap to center) was never confirmed** — the app sent the
-`CAL:` set command and immediately assumed success, resetting the display
-to 0 and showing "Tared" without checking whether the offset had actually
-changed. If the set never took effect, phase 3 is simply the display
-catching back up to the real, still-uncorrected value the firmware keeps
-sending. The app was never lying about the physical reading — it was
-making an *unconfirmed claim of success* in between.
+## The bug
+This product negates roll on receipt for display purposes
+(`rr=-parseFloat(m[2])`) — confirmed, by direct comparison, that
+Tradesman standard has **no such negation**. Revisions 1–6 all sent that
+already-negated value straight into `TAR:`/`CAL:` commands, which the
+firmware interprets in *its own*, non-negated convention.
 
-## What changed in Rev 5
-- Replaced the optimistic "send set command, assume success" step with a
-  genuine confirmation step: after sending `CAL:<value>`, the app now
-  watches subsequent real packets for evidence the reading has actually
-  gone near zero (within 0.20°) before declaring success.
-- If confirmation doesn't arrive within 2.5 seconds, the same computed
-  value is resent once — covers a one-off dropped write rather than a
-  deterministic failure.
-- If the retry also isn't confirmed, Tare now reports an **honest
-  failure** ("offset change not confirmed by the unit") instead of a
-  false success that silently reverts a few seconds later.
+Worked out precisely: this doesn't just fail to correct the reading — it
+computes `rollOffset_new = 2×rollOffset − roll` instead of the correct
+`rollOffset_new = roll`. The error doesn't shrink, it **doubles with each
+tap**. This matches the very first symptom ever reported in this entire
+investigation: "moving the bubble left each time Tare is tapped."
 
-## What this does and doesn't tell us
-This does not by itself explain *why* the set fails. What it does is make
-the app's reporting truthful instead of optimistic, and turns "does the
-set actually work" into a directly observable yes/no — a real
-"Tared — confirmed" vs. a real failure toast — rather than something that
-had to be inferred by watching the bubble drift back over several
-seconds.
+## Family-wide implication
+Confirmed via source comparison that **Pro 4 Point has this exact same
+unguarded negation** and sends `TAR:` the same way — very likely the same
+bug, not fixed there yet. Same pattern as the EMA-accumulator bug found
+earlier in this investigation (also present in all four sibling products,
+only fixed in this one so far).
+
+## What changed in Rev 7
+Roll is now negated back — undoing the display-side negation —
+specifically when constructing the `TAR:` command's roll value, so the
+firmware receives its own convention instead of the app's display
+convention. Pitch is unaffected; it was never negated.
+
+## Why this one is different from Revisions 1–6
+This is the first fix in the entire investigation backed by a worked,
+numerically-verified derivation showing the *old* code produces a
+specific wrong number, and the *new* code produces the exact right one —
+rather than a plausible-sounding theory tested by trial and error.
 
 ## Family naming (current)
 - **Digital Level RV** — MPU-6050, 4-point bull's-eye UI, RV market
 - **Digital Level Tradesman** — MPU-6050, standard bubble UI, general trades
 - **Digital Level Tradesman 4 Point** (this product) — MPU-6050, 4-point bull's-eye UI, general trades / machine leveling
 - **Digital Level Pro** — ADXL355, standard bubble UI, precision/millwright
-- **Digital Level Pro 4 Point** — ADXL355, 4-point bull's-eye UI, precision/millwright
+- **Digital Level Pro 4 Point** — ADXL355, 4-point bull's-eye UI, precision/millwright — **has the same unfixed bug described above**
 
 ## Known gap
 No `icons/` folder included — same as every other package in this family.

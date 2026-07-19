@@ -2,8 +2,92 @@
 <!--
   Digital Level Tradesman 4 Point -- Web App
 
-  REVISION 5 (based on v1.0)
-  Date: 2026-07-18
+  REVISION 7 (based on v1.0)
+  Date: 2026-07-19
+
+  A separate AI (ChatGPT) reviewed the handoff document and, rather than
+  proposing another timing experiment, questioned whether the receive-side
+  coordinate negation (`rr=-parseFloat(m[2])`, present in this product but
+  NOT in Tradesman standard, confirmed by direct comparison) might be
+  inconsistently applied between the display path and the command-
+  construction path. This was checked rigorously -- worked out
+  algebraically and verified numerically against the firmware's actual
+  transmit formula (adjRoll = roll - rollOffset) and TAR: handler
+  (rollOffset += value) -- and confirmed as a real, previously
+  undiscovered bug, independent of everything tried in Revisions 1-6.
+
+  The bug: this product negates roll on receipt (for display purposes),
+  but Revisions 1-6 all sent that already-negated value straight into
+  TAR:/CAL: commands, which the firmware interprets in ITS OWN
+  (non-negated) convention. Worked out precisely: this does not just fail
+  to correct the reading -- it computes rollOffset_new = 2*rollOffset -
+  roll instead of the correct rollOffset_new = roll, so the error does not
+  shrink, it DOUBLES with each tap. This matches the very first symptom
+  ever reported in this entire investigation: "moving the bubble left
+  each time Tare is tapped."
+
+  Confirmed via source comparison that Pro 4 Point has this exact same
+  unguarded negation and sends TAR: the same way -- this is very likely a
+  family-wide bug affecting both 4-Point products identically, not fixed
+  there yet, matching the same pattern as the EMA-accumulator bug found
+  earlier in this investigation (also present in all four sibling
+  products, only fixed here so far).
+
+  New in Rev 7 (changes from Rev 6):
+    - Roll is now negated back (undoing the display-side negation)
+      specifically when constructing the TAR: command's roll value, so
+      the firmware receives its own convention instead of the app's
+      display convention. Pitch is unaffected -- it was never negated.
+    - This is the first fix in this entire investigation backed by a
+      worked, numerically-verified derivation showing the OLD code
+      produces a specific wrong number, and the NEW code produces the
+      exact right one -- rather than a plausible-sounding theory tested
+      by trial and error.
+
+
+  Reported against Rev 5: the honest failure path added in Rev 5 ("Tare
+  failed -- offset change not confirmed by the unit") is now firing
+  consistently -- i.e., the CAL: set command's effect is reliably never
+  confirmed, even after the full delay, confirmation window, and one
+  retry. This is now considered strong evidence that the CAL: clear-then-
+  set redesign (Revisions 1-5) does not work reliably on this firmware,
+  independent of timing.
+
+  A fix was proposed by a separate AI (Grok), reviewed by the user and
+  brought here for evaluation: abandon the CAL: sequence entirely and
+  revert to a single TAR: command, matching the pattern already confirmed
+  to work reliably in DL Tradesman (standard) on the same firmware. This
+  core direction is adopted in Rev 6. The proposal's exact code was NOT
+  used as-is -- see below.
+
+  New in Rev 6 (changes from Rev 5):
+    - Reverted Tare to a single command: TAR:<displayed pitch>,<displayed
+      roll> (additive, matching Tradesman standard exactly), awaited, with
+      a simple in-progress flag to prevent double-tapping. All of the
+      Revision 1-5 CAL:-based machinery (clear step, raw-sample buffering,
+      set step, confirmation, retry) has been removed, not just bypassed.
+    - IMPORTANT DEVIATION FROM THE REVIEWED PROPOSAL: the proposal's exact
+      code reset only the displayed React state (pitch/roll), not the EMA
+      smoothing accumulator (epRef/erRef) underneath it. That is precisely
+      the ORIGINAL bug this entire investigation started from (see the
+      handoff document, Section 1, and this file's Revision 1 entry
+      below) -- without resetting the accumulator too, the next real
+      packet blends the firmware's now-corrected reading into the OLD,
+      stale accumulator value, and the display drifts off-center again
+      instead of staying at 0. The accumulator reset is preserved in this
+      revision's implementation.
+    - Also adapted: the reviewed proposal expected send() to throw on
+      failure (try/catch); this app's send() (since Rev 2) catches its
+      own errors internally and returns true/false instead, so the
+      failure check here uses that return value rather than a catch
+      block.
+    - Honesty note: reverting to TAR: sidesteps the CAL:-sequence failure
+      mode this investigation spent five revisions on, backed by strong
+      evidence that failure mode is real. It does not explain WHY the
+      CAL: sequence fails -- that remains unresolved and undiagnosed. If
+      TAR: also fails to zero reliably, that would be new information
+      suggesting a problem broader than the CAL:-specific pattern
+      previously suspected.
 
   Reported against Rev 4: on tap, the bubble drifts SLOWLY left (during
   the 3-second clear/delay window), then SNAPS to center, then drifts
@@ -606,34 +690,12 @@ function App(){
   const startupBufRef=useRef([]);
   const STARTUP_SAMPLES=3; // v1.2: samples averaged before trusting the reading after connect
 
-  // Rev 1: redesigned Tare -- clear the firmware's stored offset first
-  // (CAL:0.00,0.00), observe a few CLEAN raw samples, then set the offset
-  // directly from that observation (CAL:, absolute) instead of adding to
-  // whatever offset was already stored (TAR:, relative). This can't
-  // compound an already-wrong offset, whatever caused it.
-  //
-  // Rev 5: reported a 3-phase motion on tap -- slow drift left (during the
-  // clear/delay window), a snap back to center, then a slow drift left
-  // again to the same value as before. Traced this precisely: phases 1 and
-  // 3 are both honest reflections of real incoming packets under normal
-  // EMA smoothing. Phase 2 (the snap to center) was NEVER confirmed --
-  // the app sent the CAL: set command and immediately assumed success,
-  // resetting the display and showing "Tared" without checking whether
-  // the offset actually changed. That's the bug being fixed here: replace
-  // the optimistic reset with an actual confirmation step that watches
-  // real packets for evidence the offset took effect, and reports honest
-  // failure if it doesn't -- instead of showing a success message that
-  // silently reverts itself once the display catches back up to reality.
-  const tareStateRef=useRef('idle'); // 'idle' | 'clearing' | 'awaiting-raw' | 'confirming'
-  const tareRawBufRef=useRef([]);
-  const tareTimeoutRef=useRef(null);
-  const tareSetValueRef=useRef(null); // [avgP,avgR] most recently sent as the set command, for confirmation comparison and retry
-  const tareRetriesRef=useRef(0);
-  const TARE_RAW_SAMPLES=3;
-  const TARE_TIMEOUT_MS=3000; // abort back to idle if no raw packet arrives -- guards against a lost/dropped response leaving Tare permanently stuck
-  const TARE_CONFIRM_TOLERANCE_DEG=0.20; // how close to 0 counts as "confirmed" -- generous enough for residual sensor noise, tight enough to mean the offset really changed
-  const TARE_CONFIRM_TIMEOUT_MS=2500; // how long to wait for confirmation before retrying or giving up
-  const TARE_MAX_RETRIES=1; // resend the set command once more before reporting failure, in case of a one-off dropped write
+  // Rev 6: reverted to a single TAR: command (see the Tare button's
+  // onClick for full reasoning). The CAL: clear-then-set machinery from
+  // Revisions 1-5 (raw-sample buffering, confirmation, retry) is no
+  // longer used -- only a simple in-progress flag remains, to guard
+  // against double-tapping Tare while a write is in flight.
+  const tareStateRef=useRef('idle'); // 'idle' | 'taring'
 
   const[pitch,setPitch]=useState(0);
   const[roll,setRoll]=useState(0);
@@ -702,30 +764,6 @@ function App(){
     }
   },[toast]);
 
-  // Rev 5: sends the CAL: set command and manages what happens next --
-  // confirmation, one retry, or an honest failure report -- instead of
-  // the previous behavior of sending it and immediately assuming success.
-  const attemptSetOffset=useCallback((avgP,avgR)=>{
-    tareSetValueRef.current=[avgP,avgR];
-    tareStateRef.current='confirming';
-    send(`CAL:${avgP.toFixed(2)},${avgR.toFixed(2)}`); // absolute set, from a clean observation -- can't compound a bad prior offset. Fire-and-forget here, but send() itself surfaces a failure toast if this write doesn't go through at the JS/browser level (Rev 2); confirmation of whether it actually took effect on the firmware happens separately, below.
-    clearTimeout(tareTimeoutRef.current);
-    tareTimeoutRef.current=setTimeout(()=>{
-      if(tareStateRef.current!=='confirming')return; // already confirmed or aborted elsewhere
-      if(tareRetriesRef.current<TARE_MAX_RETRIES){
-        tareRetriesRef.current+=1;
-        toast('Tare not yet confirmed \u2014 retrying\u2026');
-        const[rp,rr]=tareSetValueRef.current;
-        attemptSetOffset(rp,rr); // resend the SAME computed value -- not a fresh raw observation, since the unit hasn't moved
-      }else{
-        tareStateRef.current='idle';
-        tareSetValueRef.current=null;
-        tareRetriesRef.current=0;
-        toast('Tare failed \u2014 offset change not confirmed by the unit','error');
-      }
-    },TARE_CONFIRM_TIMEOUT_MS);
-  },[send,toast]);
-
   // BLE data — NOTE: if live hardware roll is inverted vs spec,
   // change parseFloat(m[2]) to -parseFloat(m[2]) here and nowhere else.
   const onData=useCallback(e=>{
@@ -734,44 +772,6 @@ function App(){
     if(!m)return;
     const rp=parseFloat(m[1]);
     const rr=-parseFloat(m[2]); // hardware X axis is inverted relative to display convention
-
-    // Rev 1: mid-tare-sequence packets are diverted here entirely -- they do
-    // NOT feed the normal EMA/display path below, so nothing flashes an
-    // uncorrected raw reading on screen during the brief clear/observe
-    // window. See the Tare button's onClick for the sequence this completes.
-    if(tareStateRef.current==='awaiting-raw'){
-      tareRawBufRef.current.push([rp,rr]);
-      if(tareRawBufRef.current.length<TARE_RAW_SAMPLES)return;
-      const n=tareRawBufRef.current.length;
-      const avgP=tareRawBufRef.current.reduce((s,x)=>s+x[0],0)/n;
-      const avgR=tareRawBufRef.current.reduce((s,x)=>s+x[1],0)/n;
-      tareRawBufRef.current=[];
-      attemptSetOffset(avgP,avgR);
-      return;
-    }
-
-    // Rev 5: previously the app sent the set command and immediately
-    // assumed success (optimistic reset to 0 + "Tared" toast) without ever
-    // checking whether the offset actually changed. Now: watch real
-    // incoming packets for evidence the firmware's own transmitted value
-    // has actually gone near zero, and only THEN report success. If
-    // confirmation doesn't arrive in time, attemptSetOffset's own timeout
-    // (below) handles retry/failure -- this branch only handles the
-    // success path.
-    if(tareStateRef.current==='confirming'){
-      if(Math.abs(rp)<=TARE_CONFIRM_TOLERANCE_DEG && Math.abs(rr)<=TARE_CONFIRM_TOLERANCE_DEG){
-        clearTimeout(tareTimeoutRef.current);
-        tareStateRef.current='idle';
-        tareSetValueRef.current=null;
-        tareRetriesRef.current=0;
-        epRef.current=0;erRef.current=0;
-        setPitch(0);setRoll(0);
-        toast('Tared \u2014 confirmed','success');
-      }
-      // else: still waiting: fall through without touching the display,
-      // same as 'awaiting-raw' -- don't flash the not-yet-corrected reading.
-      return;
-    }
 
     if(epRef.current===null){
       // v1.2: the very first packet after connecting was being displayed
@@ -797,18 +797,14 @@ function App(){
     }
     setPitch(+(epRef.current).toFixed(2));
     setRoll( +(erRef.current).toFixed(2));
-  },[send,toast,attemptSetOffset]);
+  },[send,toast]);
 
   const onDisc=useCallback(()=>{
     setIsConnected(false);txRef.current=null;
     epRef.current=null;erRef.current=null;startupBufRef.current=[];
-    // Rev 1: guard against disconnecting mid-tare-sequence -- without this,
-    // a stale 'awaiting-raw' state (and its pending timeout) would carry
-    // into a future reconnect and could intercept normal data as if it
-    // were still part of an old tare attempt.
-    clearTimeout(tareTimeoutRef.current);
-    tareStateRef.current='idle';tareRawBufRef.current=[];
-    tareSetValueRef.current=null;tareRetriesRef.current=0; // Rev 5
+    // Rev 1/6: guard against disconnecting mid-tare -- don't leave a
+    // stale 'taring' state carried into a future reconnect.
+    tareStateRef.current='idle';
     toast('Disconnected');
   },[toast]);
 
@@ -862,7 +858,7 @@ function App(){
             h('h1',{style:{fontSize:'22px',fontWeight:300,color:'white',margin:0,lineHeight:1}},
               'Digital Level Tradesman ',h('span',{style:{fontWeight:700,color:'#fbbf24'}},'4 Point')),
             h('p',{style:{fontSize:'10px',color:'#475569',margin:'2px 0 0'}},
-              'MPU-6050 \u00B7 ESP32 \u00B7 BLE \u00B7 Rev 5 (based on v1.0)')
+              'MPU-6050 \u00B7 ESP32 \u00B7 BLE \u00B7 Rev 7 (based on v1.0)')
           ),
           h('div',{style:{display:'flex',alignItems:'center',gap:'5px',padding:'4px 10px',
               borderRadius:'20px',border:`1px solid ${sc}40`,background:`${sc}12`,
@@ -1011,74 +1007,71 @@ function App(){
         h('button',{
             onClick:async()=>{
               if(!isConnected){toast('Not connected \u2014 tare not applied');return;}
-              // Rev 1: redesigned. Previously sent TAR: (adds the current
-              // DISPLAYED value to whatever offset the firmware already had
-              // stored) -- correct math IF the displayed value was trustworthy,
-              // but that meant any past display error got permanently added
-              // into the firmware's stored (flash-persisted) offset, with no
-              // way to recover except tapping Tare again from a correct
-              // reading. Now: clear the firmware's offset first (CAL:0,0),
-              // observe a few CLEAN raw samples with that offset wiped, then
-              // set the offset directly from that observation (CAL:, absolute)
-              // -- this can't compound a bad prior offset, whatever caused it.
+              // Rev 6: reverted to a single TAR: command, matching the
+              // pattern already proven to work reliably in DL Tradesman
+              // (standard) -- on a suggestion (credited: a proposal
+              // reviewed from another AI, Grok) to abandon the CAL:
+              // clear-then-set redesign entirely rather than keep tuning
+              // its timing. That redesign (Revisions 1-5) is now backed by
+              // strong evidence that its SECOND command reliably fails to
+              // take effect on this firmware, regardless of delay length
+              // (tested at 300ms, 3000ms, and via an independent retry
+              // several seconds later -- see the handoff document,
+              // Section 6). Reverting to the single-command pattern
+              // sidesteps that failure mode entirely, since Tradesman
+              // standard's identical single-command approach is confirmed
+              // to zero reliably on the same firmware.
+              //
+              // IMPORTANT: the reviewed proposal's exact code was NOT used
+              // as-is. It reset only the displayed React state (pitch/
+              // roll), not the EMA smoothing accumulator (epRef/erRef)
+              // underneath it -- which is precisely the ORIGINAL bug this
+              // whole investigation started from (see Revision 1's
+              // changelog and the handoff document, Section 1): without
+              // resetting the accumulator too, the next real packet blends
+              // the firmware's now-corrected reading into the OLD, stale
+              // accumulator value, and the display drifts back off-center
+              // instead of staying at 0. That reset is preserved below.
               if(tareStateRef.current!=='idle'){
-                toast('Tare already in progress\u2026');return; // guard: ignore taps mid-sequence
+                toast('Tare already in progress\u2026');return;
               }
-              // Rev 2: await the clear write and check it actually succeeded
-              // (send() now reports success/failure -- see its definition)
-              // before entering the raw-sample-collection phase, instead of
-              // firing it and immediately moving on regardless. A reported
-              // bug (clear appeared to work, but a follow-up set never took
-              // effect, reproducibly across reconnects and repeated taps)
-              // pointed at the two writes possibly racing each other or the
-              // second one being silently dropped -- this removes any chance
-              // of the two writes overlapping at the BLE-stack level.
-              tareStateRef.current='clearing';
+              tareStateRef.current='taring';
               toast('Taring\u2026');
-              const cleared=await send('CAL:0.00,0.00');
-              if(!cleared){
-                tareStateRef.current='idle';
-                toast('Tare failed \u2014 could not clear offset, try again','error');
+              // Rev 7: found a genuine, verified sign-convention bug,
+              // independent of everything tried in Revisions 1-6. This
+              // product (unlike Tradesman standard) negates roll on
+              // receipt: `rr=-parseFloat(m[2])` two lines below, with a
+              // comment explaining why -- "hardware X axis is inverted
+              // relative to display convention." Tradesman standard has
+              // NO such negation (confirmed directly: `rr =
+              // parseFloat(m[2])`, no minus sign). The firmware, however,
+              // is IDENTICAL in both products and expects TAR:/CAL: values
+              // in ITS OWN convention (adjRoll = roll - rollOffset;
+              // TAR: rollOffset += value_received) -- it knows nothing
+              // about this app's display-side negation.
+              //   Sending the DISPLAYED (already-negated) roll value
+              // straight into TAR:, as both this app previously did and as
+              // the Grok-reviewed proposal behind Rev 6 also did, computes
+              // the WRONG new offset: rollOffset_new = 2*rollOffset_current
+              // - roll (worked out and numerically verified against the
+              // firmware's actual transmit/receive formulas) instead of the
+              // correct rollOffset_new = roll. The resulting error does not
+              // shrink -- it DOUBLES with each tap, matching the very
+              // first symptom ever reported in this investigation ("moving
+              // the bubble left each time Tare is tapped").
+              //   Fix: negate roll back before sending it in the command,
+              // undoing the display-side negation, so the firmware
+              // receives its own convention. Pitch is unaffected -- it was
+              // never negated in the first place.
+              const ok=await send(`TAR:${pitch.toFixed(2)},${(-roll).toFixed(2)}`);
+              tareStateRef.current='idle';
+              if(!ok){
+                toast('Tare failed \u2014 command not sent, try again','error');
                 return;
               }
-              // Rev 3: reported that DL Tradesman (standard), which sends
-              // only ONE command per tare (TAR:, additive), zeroes reliably
-              // -- while this product's two-command clear-then-set sequence
-              // does not. Same firmware in both cases, so this points at
-              // sending two commands close together specifically, not at
-              // command parsing being broken in general. Awaiting the first
-              // write (Rev 2) only confirms the BROWSER handed it to the BLE
-              // stack -- it says nothing about whether the firmware's own
-              // processing loop has actually finished acting on it before
-              // the next write arrives. Add a real wall-clock pause here
-              // (independent of how fast packets happen to be arriving) to
-              // give the firmware time to have definitely applied the clear
-              // before any subsequent packet is trusted as clean raw data.
-              // Rev 4: 300ms did not resolve it. Sharper evidence found on
-              // closer comparison: Tradesman (standard) sends these EXACT
-              // two commands (CAL:0.00,0.00 and CAL:<value>) elsewhere in
-              // its own code (a "Reset" action and the end of its 2-position
-              // Calibration flow, respectively) -- but NEVER as an automated
-              // pair. Its Calibration flow alone has a 3-second countdown
-              // before anything else happens. Nothing in this product family
-              // has ever tested a gap as short as 300ms between two
-              // CAL:-family commands. Raised to 3000ms -- a floor directly
-              // matched to the shortest known-good gap size actually present
-              // in a working flow in the sibling product, not an arbitrary
-              // increase.
-              await new Promise(r=>setTimeout(r,3000));
-              tareStateRef.current='awaiting-raw';
-              tareRawBufRef.current=[];
-              clearTimeout(tareTimeoutRef.current);
-              tareTimeoutRef.current=setTimeout(()=>{
-                // guard: if no raw packet arrives (dropped BLE packet, unit
-                // busy, etc.), don't leave Tare stuck forever -- abort back
-                // to idle so the next tap can start a fresh attempt.
-                if(tareStateRef.current==='awaiting-raw'){
-                  tareStateRef.current='idle';tareRawBufRef.current=[];
-                  toast('Tare timed out \u2014 no response from unit, try again','error');
-                }
-              },TARE_TIMEOUT_MS);
+              epRef.current=0;erRef.current=0;
+              setPitch(0);setRoll(0);
+              toast('Tared \u2014 display zeroed','success');
             },
             style:{width:'100%',padding:'13px',borderRadius:'14px',
               border:'1px solid rgba(251,191,36,0.35)',
@@ -1090,7 +1083,7 @@ function App(){
         h('div',{style:{textAlign:'center',fontSize:'11px',color:'#1e3a5f',paddingTop:'4px'}},
           h('p',{style:{margin:0}},'Arduino Nano ESP32 + MPU-6050 \u00B7 BLE Nordic UART'),
           h('p',{style:{margin:'3px 0 0'}},
-            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 Rev 5`)
+            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 Rev 7`)
         )
       )
     ),
