@@ -1,33 +1,43 @@
 # Digital Level Tradesman 4 Point — Web App
 
-**Version 1.3** · 2026-07-19 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
+**Version 1.4** · 2026-07-19 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
 
-## Note on version history
-An earlier v1.3 (adaptive-smoothing bubble-response fix) was killed
-before shipping, because it was built on top of v1.2 without first
-catching the bug described below — fixing v1.2's gap took priority.
-**This v1.3 is a clean rebuild from v1.2 containing only this fix.** The
-adaptive-smoothing work is set aside for a future version, to be redone
-on top of this corrected baseline rather than carried forward as-is.
+## What changed in v1.4
+Bubble response speed. Built clean on top of v1.3's corrected baseline
+(branding removal preserved, confirmed below), rather than carried
+forward from the killed v1.3 build.
 
-## What changed in v1.3
-Removed "MPU-6050 · ESP32 · BLE" chip/sensor branding from both places it
-was still showing — the header subtitle under the product name, and a
-separate line in the footer.
+Re-added adaptive two-rate EMA smoothing:
+- Fast alpha (0.30) while a reading is still catching up to a real
+  change (e.g. someone turning a leveling screw)
+- Drops back to the original slow, stable alpha (0.05) once close to
+  settled
+- Applied independently per axis, since a real adjustment often only
+  changes one
+- Does **not** change steady-state accuracy — only how long it takes to
+  get there
 
-This removal was already done for Digital Level Tradesman (standard)
-back in v1.6 (header) and v1.8 (footer), but this product's own removal
-(originally done in the old, discarded v1.1–v1.4 line) was lost when that
-line was discarded and never re-applied during the clean rebuild that
-followed. Caught and fixed now, on the declared threshold standard,
-before shipping.
+## Confirmed before implementing
+- Isolated from Tare, connect-time startup averaging, and all three demo
+  modes — same verification as the killed build; none of those touch
+  this smoothing-rate logic
+- "MPU-6050 · ESP32 · BLE" branding remains removed from both the header
+  and footer (v1.3's fix) — this version only adds the smoothing change,
+  nothing else
+
+## Still known, not yet done
+- Version number isn't visible under the product name at the top (only
+  in the footer) — the same fix Tradesman standard got in v1.8, not yet
+  applied here
+- Pro 4 Point still has the branding-removal gap v1.3 fixed here, not
+  yet ported
 
 ## Family naming (current)
 - **Digital Level RV** — MPU-6050, 4-point bull's-eye UI, RV market
 - **Digital Level Tradesman** — MPU-6050, standard bubble UI, general trades
 - **Digital Level Tradesman 4 Point** (this product) — MPU-6050, 4-point bull's-eye UI, general trades / machine leveling
 - **Digital Level Pro** — ADXL355, standard bubble UI, precision/millwright
-- **Digital Level Pro 4 Point** — ADXL355, 4-point bull's-eye UI, precision/millwright — **likely has this same unfixed gap, not checked yet**
+- **Digital Level Pro 4 Point** — ADXL355, 4-point bull's-eye UI, precision/millwright
 
 ## Known gap
 No `icons/` folder included — same as every other package in this family.
