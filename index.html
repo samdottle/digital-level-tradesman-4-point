@@ -1,309 +1,61 @@
 <!DOCTYPE html>
 <!--
   Digital Level Tradesman 4 Point -- Web App
+  Version: 1.2
+  Date:    2026-07-19
 
-  REVISION 7 (based on v1.0)
-  Date: 2026-07-19
+  New in v1.2 (changes from v1.1):
+    - Added a crosshair through the bubble's own center, reaching its own
+      outer edge (r:18) with no gap. Previously the bubble's crosshair
+      stopped short of its own edge, leaving a small gap that made it
+      harder to precisely match against the fixed background crosshair /
+      center target. Now it's a precise line-to-line match, same fix as
+      Digital Level Tradesman (standard) v1.9's bubble center line, in
+      the 2D bull's-eye equivalent (horizontal + vertical instead of just
+      vertical).
 
-  A separate AI (ChatGPT) reviewed the handoff document and, rather than
-  proposing another timing experiment, questioned whether the receive-side
-  coordinate negation (`rr=-parseFloat(m[2])`, present in this product but
-  NOT in Tradesman standard, confirmed by direct comparison) might be
-  inconsistently applied between the display path and the command-
-  construction path. This was checked rigorously -- worked out
-  algebraically and verified numerically against the firmware's actual
-  transmit formula (adjRoll = roll - rollOffset) and TAR: handler
-  (rollOffset += value) -- and confirmed as a real, previously
-  undiscovered bug, independent of everything tried in Revisions 1-6.
+  New in v1.1 (changes from v1.0): two confirmed bugs fixed in the Tare
+  function.
 
-  The bug: this product negates roll on receipt (for display purposes),
-  but Revisions 1-6 all sent that already-negated value straight into
-  TAR:/CAL: commands, which the firmware interprets in ITS OWN
-  (non-negated) convention. Worked out precisely: this does not just fail
-  to correct the reading -- it computes rollOffset_new = 2*rollOffset -
-  roll instead of the correct rollOffset_new = roll, so the error does not
-  shrink, it DOUBLES with each tap. This matches the very first symptom
-  ever reported in this entire investigation: "moving the bubble left
-  each time Tare is tapped."
+    1. EMA smoothing accumulator (epRef.current/erRef.current) was never
+       reset when Tare was tapped -- only the displayed value was. The
+       accumulator kept holding its stale pre-tare value, so the display
+       would drift back off-center over the following packets instead of
+       staying at 0. Fixed: the accumulator is now reset to 0 alongside
+       the displayed state.
 
-  Confirmed via source comparison that Pro 4 Point has this exact same
-  unguarded negation and sends TAR: the same way -- this is very likely a
-  family-wide bug affecting both 4-Point products identically, not fixed
-  there yet, matching the same pattern as the EMA-accumulator bug found
-  earlier in this investigation (also present in all four sibling
-  products, only fixed here so far).
+    2. Roll is negated on receipt for display purposes
+       (rr=-parseFloat(m[2]) -- "hardware X axis is inverted relative to
+       display convention"), but that already-negated value was being
+       sent straight into the TAR: command, which the firmware interprets
+       in its own, non-negated convention. Worked out precisely: this
+       computed a new offset of (2*rollOffset - roll) instead of the
+       correct (roll) -- meaning the error did not shrink on tare, it
+       DOUBLED with each tap. This was the root cause of the original,
+       very first symptom ever reported for this product: "moving the
+       bubble left each time Tare is tapped." Fixed: roll is negated back
+       (undoing the display-side negation) specifically when constructing
+       the TAR: command, so the firmware receives its own convention.
 
-  New in Rev 8 (changes from Rev 7):
-    - Added a compact crosshair inside the moving bubble icon. The bubble
-      reticle aligns with the fixed bullseye axes when the unit is level.
-    - No BLE, tare, calibration, smoothing, or firmware-facing logic changed.
+  Both fixes are confirmed working as of this version. Getting here took
+  seven iterative attempts (a redesigned clear/observe/set tare sequence
+  that was ultimately abandoned, several timing experiments, a reverted
+  approach, and finally this sign-convention fix) -- full blow-by-blow
+  history of that process, including dead ends and why each one was
+  abandoned, is preserved in a separate document:
+  DL_Tradesman4Point_Tare_Bug_Handoff.md. Not duplicated here to keep this
+  changelog focused on what's actually true about the shipped code.
 
-  New in Rev 7 (changes from Rev 6):
-    - Roll is now negated back (undoing the display-side negation)
-      specifically when constructing the TAR: command's roll value, so
-      the firmware receives its own convention instead of the app's
-      display convention. Pitch is unaffected -- it was never negated.
-    - This is the first fix in this entire investigation backed by a
-      worked, numerically-verified derivation showing the OLD code
-      produces a specific wrong number, and the NEW code produces the
-      exact right one -- rather than a plausible-sounding theory tested
-      by trial and error.
-
-
-  Reported against Rev 5: the honest failure path added in Rev 5 ("Tare
-  failed -- offset change not confirmed by the unit") is now firing
-  consistently -- i.e., the CAL: set command's effect is reliably never
-  confirmed, even after the full delay, confirmation window, and one
-  retry. This is now considered strong evidence that the CAL: clear-then-
-  set redesign (Revisions 1-5) does not work reliably on this firmware,
-  independent of timing.
-
-  A fix was proposed by a separate AI (Grok), reviewed by the user and
-  brought here for evaluation: abandon the CAL: sequence entirely and
-  revert to a single TAR: command, matching the pattern already confirmed
-  to work reliably in DL Tradesman (standard) on the same firmware. This
-  core direction is adopted in Rev 6. The proposal's exact code was NOT
-  used as-is -- see below.
-
-  New in Rev 6 (changes from Rev 5):
-    - Reverted Tare to a single command: TAR:<displayed pitch>,<displayed
-      roll> (additive, matching Tradesman standard exactly), awaited, with
-      a simple in-progress flag to prevent double-tapping. All of the
-      Revision 1-5 CAL:-based machinery (clear step, raw-sample buffering,
-      set step, confirmation, retry) has been removed, not just bypassed.
-    - IMPORTANT DEVIATION FROM THE REVIEWED PROPOSAL: the proposal's exact
-      code reset only the displayed React state (pitch/roll), not the EMA
-      smoothing accumulator (epRef/erRef) underneath it. That is precisely
-      the ORIGINAL bug this entire investigation started from (see the
-      handoff document, Section 1, and this file's Revision 1 entry
-      below) -- without resetting the accumulator too, the next real
-      packet blends the firmware's now-corrected reading into the OLD,
-      stale accumulator value, and the display drifts off-center again
-      instead of staying at 0. The accumulator reset is preserved in this
-      revision's implementation.
-    - Also adapted: the reviewed proposal expected send() to throw on
-      failure (try/catch); this app's send() (since Rev 2) catches its
-      own errors internally and returns true/false instead, so the
-      failure check here uses that return value rather than a catch
-      block.
-    - Honesty note: reverting to TAR: sidesteps the CAL:-sequence failure
-      mode this investigation spent five revisions on, backed by strong
-      evidence that failure mode is real. It does not explain WHY the
-      CAL: sequence fails -- that remains unresolved and undiagnosed. If
-      TAR: also fails to zero reliably, that would be new information
-      suggesting a problem broader than the CAL:-specific pattern
-      previously suspected.
-
-  Reported against Rev 4: on tap, the bubble drifts SLOWLY left (during
-  the 3-second clear/delay window), then SNAPS to center, then drifts
-  SLOWLY left again back to the same value as before.
-
-  Traced this precisely. Phases 1 and 3 are both honest reflections of
-  real incoming packets under normal EMA smoothing -- nothing wrong with
-  either. Phase 2 (the snap to center) was NEVER confirmed: the app sent
-  the CAL: set command and immediately assumed success -- resetting the
-  display to 0 and showing "Tared" without checking whether the offset
-  had actually changed. If the set never took effect, phase 3 is simply
-  the display catching back up to the real, still-uncorrected value the
-  firmware keeps sending. The app was not lying about the physical
-  reading at any point -- it was making an unconfirmed claim of success
-  in between.
-
-  New in Rev 5 (changes from Rev 4):
-    - Replaced the optimistic "send set command, assume success" step
-      with a genuine confirmation step: after sending CAL:<value>, the
-      app now watches subsequent real packets for evidence the reading
-      has actually gone near zero (within TARE_CONFIRM_TOLERANCE_DEG =
-      0.20 deg) before declaring success. Nothing is reset or reported as
-      "Tared" until that's observed.
-    - If confirmation doesn't arrive within TARE_CONFIRM_TIMEOUT_MS
-      (2500ms), the SAME computed value is resent once
-      (TARE_MAX_RETRIES = 1) -- covers a one-off dropped write rather
-      than a deterministic failure.
-    - If the retry also isn't confirmed, Tare now reports an HONEST
-      failure ("offset change not confirmed by the unit") instead of a
-      false success that silently reverts a few seconds later.
-    - This does not by itself explain WHY the set fails -- it makes the
-      app's reporting truthful instead of optimistic, and turns "does the
-      set actually work" into a directly observable yes/no (a real
-      'Tared — confirmed' vs. a real failure toast) rather than something
-      that had to be inferred from watching the bubble drift back.
-
-  Sharper evidence found on closer comparison against DL Tradesman
-  (standard): that product sends these EXACT two commands
-  (CAL:0.00,0.00 and CAL:<value>) elsewhere in its own code -- a "Reset"
-  action and the end of its 2-position Calibration flow -- but never as
-  an automated pair. Its Calibration flow alone has a 3-second countdown
-  before anything else happens, followed by ~6 seconds of sample
-  collection before its own CAL: command is sent. Nothing in this product
-  family has ever tested a gap as short as Rev 3's 300ms between two
-  CAL:-family commands.
-
-  New in Rev 4 (changes from Rev 3):
-    - Raised the wall-clock delay between the clear write succeeding and
-      the app trusting subsequent packets from 300ms to 3000ms -- a floor
-      directly matched to the shortest known-good gap size actually
-      present in a working flow in the sibling product (its 3-second
-      countdown), not an arbitrary increase. This is the only change in
-      this revision.
-    - Verified the longer delay does not conflict with the existing
-      TARE_TIMEOUT_MS=3000 guard: that timer is only started AFTER this
-      new delay completes, not from the start of the tare tap, so it
-      cannot fire prematurely during the wait. Also verified the
-      double-tap guard still correctly blocks a second tap during the
-      now-longer wait (state is 'clearing' throughout, which the guard
-      checks against 'idle').
-    - Honesty note: this is a more strongly evidenced value than Rev 3's
-      300ms, but still a floor/starting point, not a measured
-      requirement. If this resolves it, the true minimum needed gap is
-      still unknown (could be shorter than 3s). If it does not resolve
-      it, that is meaningfully stronger evidence against the timing
-      theory in general than Rev 3's result alone, since this gap is now
-      backed by a known-good comparison point rather than an arbitrary
-      guess.
-
-  New evidence: DL Tradesman (standard) does NOT show this problem --
-  both pitch and roll zero correctly there. That product sends only ONE
-  command per tare (TAR:, additive); this product's redesign sends TWO
-  (CAL:0.00,0.00 clear, then CAL:<value> set). Same firmware in both
-  cases, so this specifically implicates sending two commands close
-  together in time, not command parsing being broken in general -- and
-  matches the earlier finding that the observed -2.90 was clean and
-  consistent (meaning the clear had already fully taken effect by the
-  time all raw samples were collected; it's specifically the SECOND write
-  that isn't landing).
-
-  New in Rev 3 (changes from Rev 2):
-    - Added a real wall-clock delay (300ms) between the clear write
-      succeeding and the app starting to trust subsequent packets as
-      clean raw data. Rev 2's await only confirmed the BROWSER handed the
-      first write to the BLE stack -- it says nothing about whether the
-      firmware's own processing loop has actually finished acting on it
-      before a second write arrives. This is independent of packet rate,
-      unlike relying on "however long 3 packets happen to take."
-    - Honesty note: 300ms is a reasoned guess, not a measured value -- I
-      don't have visibility into the firmware's actual loop timing. If
-      this resolves it, great; if it helps but doesn't fully resolve it,
-      the delay may just need to be longer, which would still support the
-      same diagnosis. If it doesn't help at all, that would undercut the
-      "commands too close together" theory and point somewhere else
-      entirely -- worth reporting precisely either way.
-
-  Reported (against Rev 1): with the unit freshly tared offline, connect
-  shows the bubble centered correctly. Tapping Tare then makes it drift to
-  -2.90 deg left. Disconnecting and reconnecting shows the SAME -2.90 deg
-  again. Tapping Tare a second time does not move it at all -- stays at
-  -2.90 deg.
-
-  Traced this precisely against the firmware's actual CAL: (absolute set)
-  and TAR: (relative add) semantics: this exact sequence is what you'd see
-  if the CLEAR step (CAL:0.00,0.00) succeeds every time, but the follow-up
-  SET step (CAL:<observed raw>,<observed raw>) never takes effect. Clear
-  succeeding reveals the true, previously-masked raw tilt (-2.90); if set
-  then silently fails, that raw tilt is what stays on screen permanently,
-  unaffected by reconnects or repeated attempts -- matching all four
-  reported observations exactly.
-
-  New in Rev 2 (changes from Rev 1):
-    - Found a real, concrete gap while investigating: send() had a
-      completely silent catch(_){} -- any BLE write failure produced zero
-      indication to the user or in the code. Now returns true/false for
-      success/failure and surfaces a toast on any caught write error,
-      instead of swallowing it silently.
-    - The Tare button's onClick is now async and AWAITS the clear write,
-      checking it actually succeeded before proceeding to the raw-sample-
-      collection phase -- previously the clear was fire-and-forget, with
-      no guarantee it had actually completed (from the browser's
-      perspective) before the sequence moved on. This removes any chance
-      of the clear and set writes overlapping/racing at the BLE-stack
-      level.
-    - Honesty note: I traced the reported symptom to a specific, plausible
-      mechanism and fixed the two most likely contributing issues I could
-      find in the code (silent failure, un-awaited first write). I cannot
-      confirm from here whether either was the actual root cause, or
-      whether some other issue (e.g. the firmware itself failing to
-      process two commands sent close together, which no app-side fix can
-      address) is still present. If -2.90 (or any similar stuck-at-raw-
-      value behavior) persists after this, that would point away from
-      both fixes in this revision and toward the firmware's own command
-      handling as the next place to look.
-
-  Switching to "Revision" (Rev N) instead of "Version" for this ongoing
-  Tare troubleshooting effort, at the user's request -- the prior
-  discarded v1.1-v1.4 line, plus the two further v1.1/v1.2 iterations
-  built after that restart, made "version numbers" themselves a source of
-  confusion. Revisions are NOT confirmed releases; once the Tare problem
-  is fully resolved, the final working revision will be consolidated into
-  a proper "Version 1.1". Confined to Digital Level Tradesman 4 Point only
-  for now -- no other product touched.
-
-  This Rev 1 is built on the file most recently delivered as "v1.2" (the
-  connect-time startup-settling fix, itself built on "v1.1", the isolated
-  Tare-accumulator-reset fix -- both from the clean restart after
-  discarding the original v1.1-v1.4 line). Full history preserved below.
-
-  New in Rev 1 (changes from the file previously called v1.2):
-    - Redesigned Tare. Previously (see the v1.1 entry below) Tare sent
-      TAR:<displayed pitch>,<displayed roll> -- the firmware ADDS this to
-      whatever offset it already has stored (pitchOffset +=, confirmed
-      directly against the firmware source). That's the mathematically
-      necessary approach GIVEN that the app only ever sees the already-
-      offset-corrected reading, never the sensor's true raw value -- but
-      it means any past display error, from any cause, got permanently
-      added into the firmware's stored (flash-persisted) offset, with no
-      way to recover except tapping Tare again from a since-corrected
-      reading.
-    - Fix: Tare now clears the firmware's offset first (CAL:0.00,0.00,
-      which the firmware SETS rather than adds -- confirmed directly
-      against the firmware source), waits for a few clean RAW samples
-      once that offset is wiped, then sets the offset directly from that
-      observation (CAL:, absolute) instead of adding to anything. This
-      can't compound a bad prior offset, whatever caused it, because
-      nothing from before the clear ever factors into the new value.
-    - Three safeguards added around the new async clear/observe/set
-      sequence, since none of this can be verified against real BLE
-      timing from here:
-        1. Timeout (TARE_TIMEOUT_MS = 3000ms): if no raw packet arrives
-           after clearing, abort back to idle instead of leaving Tare
-           permanently stuck waiting.
-        2. Double-tap guard: tapping Tare again while a sequence is
-           already in progress is ignored (with a toast), rather than
-           starting a second overlapping sequence.
-        3. Disconnect guard: disconnecting mid-sequence resets the tare
-           state and clears its timeout, so a future reconnect can't
-           inherit stale mid-tare state.
-    - Honesty note, stated plainly: the underlying math (clear before set
-      beats add-to-whatever's-already-there) is verified correct on paper
-      and against the firmware source. The async/timing mechanics of the
-      three safeguards above are NOT verified against real hardware --
-      this needs real-device testing before being trusted as fully
-      working, same caveat as the v1.2 connect-time fix below.
+  KNOWN, NOT YET DONE: the same two bugs are confirmed present in Digital
+  Level Pro 4 Point (identical unguarded roll negation and identical
+  missing accumulator reset). Digital Level Tradesman (standard) and
+  Digital Level Pro (standard) are confirmed to need only the accumulator
+  fix (neither negates roll, so the sign bug does not apply to them).
+  None of the three have been fixed yet as of this version.
 
   ============================================================
-  HISTORY (prior to this revision):
+  ORIGINAL v1.0 DESIGN NOTES:
   ============================================================
-
-  RESTARTED from v1.0. Versions 1.1-1.4 of a previous line were discarded
-  in full at the user's request after a bundled set of changes made real
-  problems worse and harder to isolate. This v1.1 is a clean rebuild from
-  v1.0 with exactly ONE change, deliberately isolated so it can be tested
-  on its own before anything else is touched:
-
-  New in this v1.1 (changes from v1.0):
-    - Fixed: tapping Tare did not settle the bubble at center -- it
-      flashed to 0 for one frame, then visibly slid back toward its old
-      off-center position (reported as "moves the bubble left every time
-      Tare is tapped"). Root cause: Tare reset the displayed React state
-      (pitch/roll) to 0, but never reset the EMA smoothing accumulator
-      (epRef.current/erRef.current) feeding it. That accumulator kept
-      holding its stale pre-tare value, so the very next real packet
-      blended the firmware's now-corrected ~0 reading into the OLD value
-      (e.g. 0.05*0 + 0.95*(-5) = -4.75 on the first packet alone), and it
-      took dozens of packets to fully converge back to 0.
-    - Fix: reset epRef.current and erRef.current to 0 in the Tare handler
-      itself, alongside the existing setPitch(0)/setRoll(0). This is the
-      ONLY functional change from v1.0 -- no smoothing-rate changes, no UI
-      changes, nothing else, so it can be evaluated in isolation.
 
   First release. Digital Level Pro 4 Point's bull's-eye + 4-point advisory
   UI and leveling-screw workflow, running on MPU-6050 instead of the
@@ -339,7 +91,7 @@
   option should be removed, relabeled, or left as-is for this tier.
 
   Everything else (purely-relative advisory, no real geometry, Bubble Demo,
-  Screw Demo, Tare fix, service worker fix) is unchanged from Pro 4 Point.
+  Screw Demo, service worker fix) is unchanged from Pro 4 Point.
 -->
 <html lang="en">
 <head>
@@ -592,18 +344,24 @@ function BullsEye({pitch,roll,threshold,isLevel,draggable,onDrag}){
           stroke:'rgba(255,255,255,0.15)',strokeWidth:1}),
       h('line',{x1:0,y1:-R*0.85,x2:0,y2:R*0.85,
           stroke:'rgba(255,255,255,0.15)',strokeWidth:1}),
-      // Moving bubble with its own precision crosshair. When the unit is
-      // level, this reticle aligns directly with the fixed bullseye axes.
+      // Fixed center target -- stationary aim point, independent of the
+      // bubble's position, so it's clear exactly where "centered" is.
+      // Drawn before the bubble group, so the bubble visually covers it
+      // once it's actually centered.
+      h('circle',{cx:0,cy:0,r:3,fill:'#ffffff',fillOpacity:0.9}),
       h('g',{style:{transition:draggable?'none':'transform 0.05s ease-out'},
           transform:`translate(${bx},${by})`},
         h('circle',{cx:0,cy:0,r:20,fill:'rgba(0,0,0,0.35)'}),
         h('circle',{cx:0,cy:0,r:18,fill:bCol,fillOpacity:0.7,
             stroke:bCol,strokeWidth:2}),
-        h('line',{x1:-12,y1:0,x2:12,y2:0,
-            stroke:'rgba(255,255,255,0.95)',strokeWidth:1.5}),
-        h('line',{x1:0,y1:-12,x2:0,y2:12,
-            stroke:'rgba(255,255,255,0.95)',strokeWidth:1.5}),
-        h('circle',{cx:0,cy:0,r:2,fill:'#ffffff',fillOpacity:0.95})
+        // Crosshair through the bubble's own center, reaching its own
+        // outer edge (r:18) with no gap -- makes it a precise line-to-line
+        // match against the fixed background crosshair/center target,
+        // instead of eyeballing the center of a filled circle.
+        h('line',{x1:-18,y1:0,x2:18,y2:0,
+            stroke:'rgba(255,255,255,0.85)',strokeWidth:1}),
+        h('line',{x1:0,y1:-18,x2:0,y2:18,
+            stroke:'rgba(255,255,255,0.85)',strokeWidth:1})
       )
     )
   );
@@ -695,12 +453,10 @@ function App(){
   const txRef=useRef(null),devRef=useRef(null);
   const epRef=useRef(null),erRef=useRef(null);
   const startupBufRef=useRef([]);
-  const STARTUP_SAMPLES=3; // v1.2: samples averaged before trusting the reading after connect
+  const STARTUP_SAMPLES=3; // samples averaged before trusting the reading after connect -- avoids displaying a single potentially-transient first packet raw and unfiltered
 
-  // Rev 6: reverted to a single TAR: command (see the Tare button's
-  // onClick for full reasoning). The CAL: clear-then-set machinery from
-  // Revisions 1-5 (raw-sample buffering, confirmation, retry) is no
-  // longer used -- only a simple in-progress flag remains, to guard
+  // Tare sends a single TAR: command (see the Tare button's onClick for
+  // the full reasoning) -- just an in-progress flag here, to guard
   // against double-tapping Tare while a write is in flight.
   const tareStateRef=useRef('idle'); // 'idle' | 'taring'
 
@@ -758,14 +514,11 @@ function App(){
       await txRef.current.writeValue(new TextEncoder().encode(cmd+'\n'));
       return true;
     }catch(err){
-      // Rev 2: this used to be a silent catch(_){} -- any write failure
-      // (dropped write, GATT busy, characteristic not ready) produced zero
-      // indication to the user OR to me. Tracing a reported bug where Tare's
-      // clear step appeared to work but the follow-up set step never took
-      // effect pointed straight at this as a real diagnostic gap. Now
-      // surfaces failures and reports success/failure to the caller so
-      // sequences that depend on a write actually landing (like Tare) can
-      // react instead of assuming it worked.
+      // Surfaces write failures (dropped write, GATT busy, characteristic
+      // not ready) instead of silently swallowing them, and reports
+      // success/failure to the caller so sequences that depend on a write
+      // actually landing (like Tare) can react instead of assuming it
+      // worked.
       toast(`Command failed: ${cmd.split(':')[0]} (${err.message||err})`,'error');
       return false;
     }
@@ -809,8 +562,8 @@ function App(){
   const onDisc=useCallback(()=>{
     setIsConnected(false);txRef.current=null;
     epRef.current=null;erRef.current=null;startupBufRef.current=[];
-    // Rev 1/6: guard against disconnecting mid-tare -- don't leave a
-    // stale 'taring' state carried into a future reconnect.
+    // Guard against disconnecting mid-tare -- don't leave a stale
+    // 'taring' state carried into a future reconnect.
     tareStateRef.current='idle';
     toast('Disconnected');
   },[toast]);
@@ -865,7 +618,7 @@ function App(){
             h('h1',{style:{fontSize:'22px',fontWeight:300,color:'white',margin:0,lineHeight:1}},
               'Digital Level Tradesman ',h('span',{style:{fontWeight:700,color:'#fbbf24'}},'4 Point')),
             h('p',{style:{fontSize:'10px',color:'#475569',margin:'2px 0 0'}},
-              'MPU-6050 \u00B7 ESP32 \u00B7 BLE \u00B7 Rev 7 (based on v1.0)')
+              'MPU-6050 \u00B7 ESP32 \u00B7 BLE \u00B7 v1.2')
           ),
           h('div',{style:{display:'flex',alignItems:'center',gap:'5px',padding:'4px 10px',
               borderRadius:'20px',border:`1px solid ${sc}40`,background:`${sc}12`,
@@ -1014,62 +767,28 @@ function App(){
         h('button',{
             onClick:async()=>{
               if(!isConnected){toast('Not connected \u2014 tare not applied');return;}
-              // Rev 6: reverted to a single TAR: command, matching the
-              // pattern already proven to work reliably in DL Tradesman
-              // (standard) -- on a suggestion (credited: a proposal
-              // reviewed from another AI, Grok) to abandon the CAL:
-              // clear-then-set redesign entirely rather than keep tuning
-              // its timing. That redesign (Revisions 1-5) is now backed by
-              // strong evidence that its SECOND command reliably fails to
-              // take effect on this firmware, regardless of delay length
-              // (tested at 300ms, 3000ms, and via an independent retry
-              // several seconds later -- see the handoff document,
-              // Section 6). Reverting to the single-command pattern
-              // sidesteps that failure mode entirely, since Tradesman
-              // standard's identical single-command approach is confirmed
-              // to zero reliably on the same firmware.
-              //
-              // IMPORTANT: the reviewed proposal's exact code was NOT used
-              // as-is. It reset only the displayed React state (pitch/
-              // roll), not the EMA smoothing accumulator (epRef/erRef)
-              // underneath it -- which is precisely the ORIGINAL bug this
-              // whole investigation started from (see Revision 1's
-              // changelog and the handoff document, Section 1): without
-              // resetting the accumulator too, the next real packet blends
-              // the firmware's now-corrected reading into the OLD, stale
-              // accumulator value, and the display drifts back off-center
-              // instead of staying at 0. That reset is preserved below.
+              // Sends a single TAR: command (additive, matching DL
+              // Tradesman standard's proven-working pattern) with two
+              // corrections this product specifically needs -- see the
+              // header comment ("New in v1.1") for the full reasoning:
+              //   1. The EMA accumulator is reset alongside the displayed
+              //      state (epRef/erRef, below), not just the display --
+              //      otherwise the next real packet blends the firmware's
+              //      corrected reading into a stale accumulator value and
+              //      the display drifts back off-center.
+              //   2. Roll is negated back (-roll) before being sent, since
+              //      this product negates roll on receipt for display
+              //      (rr=-parseFloat(m[2]) below) but the firmware expects
+              //      its own, non-negated convention. Sending the
+              //      already-negated display value computes the wrong new
+              //      offset and makes the error double with each tap.
+              //      Pitch needs no such correction -- it was never
+              //      negated.
               if(tareStateRef.current!=='idle'){
                 toast('Tare already in progress\u2026');return;
               }
               tareStateRef.current='taring';
               toast('Taring\u2026');
-              // Rev 7: found a genuine, verified sign-convention bug,
-              // independent of everything tried in Revisions 1-6. This
-              // product (unlike Tradesman standard) negates roll on
-              // receipt: `rr=-parseFloat(m[2])` two lines below, with a
-              // comment explaining why -- "hardware X axis is inverted
-              // relative to display convention." Tradesman standard has
-              // NO such negation (confirmed directly: `rr =
-              // parseFloat(m[2])`, no minus sign). The firmware, however,
-              // is IDENTICAL in both products and expects TAR:/CAL: values
-              // in ITS OWN convention (adjRoll = roll - rollOffset;
-              // TAR: rollOffset += value_received) -- it knows nothing
-              // about this app's display-side negation.
-              //   Sending the DISPLAYED (already-negated) roll value
-              // straight into TAR:, as both this app previously did and as
-              // the Grok-reviewed proposal behind Rev 6 also did, computes
-              // the WRONG new offset: rollOffset_new = 2*rollOffset_current
-              // - roll (worked out and numerically verified against the
-              // firmware's actual transmit/receive formulas) instead of the
-              // correct rollOffset_new = roll. The resulting error does not
-              // shrink -- it DOUBLES with each tap, matching the very
-              // first symptom ever reported in this investigation ("moving
-              // the bubble left each time Tare is tapped").
-              //   Fix: negate roll back before sending it in the command,
-              // undoing the display-side negation, so the firmware
-              // receives its own convention. Pitch is unaffected -- it was
-              // never negated in the first place.
               const ok=await send(`TAR:${pitch.toFixed(2)},${(-roll).toFixed(2)}`);
               tareStateRef.current='idle';
               if(!ok){
@@ -1090,7 +809,7 @@ function App(){
         h('div',{style:{textAlign:'center',fontSize:'11px',color:'#1e3a5f',paddingTop:'4px'}},
           h('p',{style:{margin:0}},'Arduino Nano ESP32 + MPU-6050 \u00B7 BLE Nordic UART'),
           h('p',{style:{margin:'3px 0 0'}},
-            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 Rev 7`)
+            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 v1.2`)
         )
       )
     ),
