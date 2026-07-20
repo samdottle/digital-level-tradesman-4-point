@@ -1,8 +1,25 @@
 <!DOCTYPE html>
 <!--
   Digital Level Tradesman 4 Point -- Web App
-  Version: 1.2
+  Version: 1.3
   Date:    2026-07-19
+
+  NOTE: an earlier v1.3 (adaptive-smoothing bubble-response fix) was
+  killed before shipping, because it was built on top of v1.2 without
+  first catching this bug -- fixing v1.2's gap took priority. This v1.3
+  is a clean rebuild from v1.2 containing ONLY this fix. The adaptive-
+  smoothing work is set aside for a future version, to be redone on top
+  of this corrected baseline rather than carried forward as-is.
+
+  New in v1.3 (changes from v1.2): removed "MPU-6050 · ESP32 · BLE"
+  chip/sensor branding from both places it was still showing -- the
+  header subtitle under the product name, and a separate line in the
+  footer. This removal was already done for Digital Level Tradesman
+  (standard) back in v1.6 (header) and v1.8 (footer), but this product's
+  own removal (originally done in the old, discarded v1.1-v1.4 line) was
+  lost when that line was discarded and never re-applied during the clean
+  rebuild that followed. Caught and fixed now, on the declared threshold
+  standard, before shipping.
 
   New in v1.2 (changes from v1.1):
     - Added a crosshair through the bubble's own center, reaching its own
@@ -616,9 +633,7 @@ function App(){
             display:'flex',alignItems:'center',justifyContent:'space-between'}},
           h('div',null,
             h('h1',{style:{fontSize:'22px',fontWeight:300,color:'white',margin:0,lineHeight:1}},
-              'Digital Level Tradesman ',h('span',{style:{fontWeight:700,color:'#fbbf24'}},'4 Point')),
-            h('p',{style:{fontSize:'10px',color:'#475569',margin:'2px 0 0'}},
-              'MPU-6050 \u00B7 ESP32 \u00B7 BLE \u00B7 v1.2')
+              'Digital Level Tradesman ',h('span',{style:{fontWeight:700,color:'#fbbf24'}},'4 Point'))
           ),
           h('div',{style:{display:'flex',alignItems:'center',gap:'5px',padding:'4px 10px',
               borderRadius:'20px',border:`1px solid ${sc}40`,background:`${sc}12`,
@@ -807,9 +822,8 @@ function App(){
 
         // Footer
         h('div',{style:{textAlign:'center',fontSize:'11px',color:'#1e3a5f',paddingTop:'4px'}},
-          h('p',{style:{margin:0}},'Arduino Nano ESP32 + MPU-6050 \u00B7 BLE Nordic UART'),
-          h('p',{style:{margin:'3px 0 0'}},
-            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 v1.2`)
+          h('p',{style:{margin:0}},
+            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 v1.3`)
         )
       )
     ),
