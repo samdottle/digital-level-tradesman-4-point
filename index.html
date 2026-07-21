@@ -1,8 +1,26 @@
 <!DOCTYPE html>
 <!--
   Digital Level Tradesman 4 Point -- Web App
-  Version: 1.7
-  Date:    2026-07-21
+  PROTO 1.0 (locked down for shipment)
+  Built from v1.7. Date: 2026-07-21
+
+  Locking down v1.7 as Proto 1.0. Two version-visibility fixes applied
+  in this pass, both genuinely overdue -- the equivalent fix had already
+  been made on Digital Level Tradesman (standard) but was never carried
+  over here, despite being asked for more than once:
+    - Added a version subtitle under the header title (previously
+      absent entirely) -- 12px, color #94a3b8, chosen for contrast
+      against the dark header background, not just matched to the
+      existing (harder-to-read) footer style.
+    - Increased the footer version text from 11px/#1e3a5f (a dark navy,
+      low-contrast against the dark background) to 13px/#64748b, a
+      lighter, more visible gray -- addressing the actual readability
+      complaint, not just adding a second, equally-hard-to-read copy.
+
+  No functional changes in this pass -- this is the same v1.7 that fixed
+  the Calibration bug (TAR:-based correction, per a separate AI's
+  structural finding), now formally locked as the shipping baseline for
+  this product.
 
   New in v1.7 (changes from v1.6): fixes v1.5 AND v1.6's calibration bug
   correctly and completely, replacing v1.6's approach rather than
@@ -819,7 +837,8 @@ function App(){
             display:'flex',alignItems:'center',justifyContent:'space-between'}},
           h('div',null,
             h('h1',{style:{fontSize:'22px',fontWeight:300,color:'white',margin:0,lineHeight:1}},
-              'Digital Level Tradesman ',h('span',{style:{fontWeight:700,color:'#fbbf24'}},'4 Point'))
+              'Digital Level Tradesman ',h('span',{style:{fontWeight:700,color:'#fbbf24'}},'4 Point')),
+            h('p',{style:{fontSize:'12px',color:'#94a3b8',margin:'3px 0 0',fontWeight:600}},'Proto 1.0')
           ),
           h('div',{style:{display:'flex',alignItems:'center',gap:'5px',padding:'4px 10px',
               borderRadius:'20px',border:`1px solid ${sc}40`,background:`${sc}12`,
@@ -1104,9 +1123,9 @@ function App(){
         ),
 
         // Footer
-        h('div',{style:{textAlign:'center',fontSize:'11px',color:'#1e3a5f',paddingTop:'4px'}},
+        h('div',{style:{textAlign:'center',fontSize:'13px',color:'#64748b',paddingTop:'4px'}},
           h('p',{style:{margin:0}},
-            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 v1.7`)
+            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 Proto 1.0`)
         )
       )
     ),
