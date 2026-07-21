@@ -1,49 +1,57 @@
 # Digital Level Tradesman 4 Point — Web App
 
-**Version 1.6** · 2026-07-21 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
+**Version 1.7** · 2026-07-21 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
 
-## What was reported against v1.5
-A precise, reproducible test: power on, connect, Tare to zero display,
-then Calibrate. First calibration left the bubble 2.35° off. Tapping
-Re-Calibrate moved it back to center.
+## Fixes v1.5 AND v1.6's calibration bug correctly and completely
+Replaces v1.6's approach rather than patching it further.
 
-## Root cause, verified numerically before writing any fix
-The 2-position average v1.5 computed is `(O − B)` for roll or `(B − O)`
-for pitch, where `O` is whatever offset was **already in effect** when
-sampling began — not necessarily 0. v1.5's math assumed `O=0`
-unconditionally, so any pre-existing offset (from a prior Tare, exactly
-as tested) leaked directly into the result. The reported **-2.35°** was
-reproduced *exactly* by this mechanism in simulation before any fix was
-written. Re-Calibrate improved it a lot but didn't zero it exactly,
-since the identical flawed math was simply reapplied a second time.
+**v1.6's fix** (app-side offset tracking) turned out to only work
+starting from a session's *second* calibration — confirmed by tracing
+the actual shipped v1.6 code against the exact reported test sequence
+(power on, connect, Tare, Calibrate): the tracking refs are still `null`
+at that point, so the first calibration used the identical formula as
+v1.5, producing "no visible change at all" exactly as reported. This was
+a real, acknowledged gap in v1.6's scope, not a new or different bug.
+
+## Root structural issue, found by ChatGPT
+Reviewing a handoff document of this problem: both v1.5 and v1.6 sent
+the calibration result via `CAL:`, which **replaces** the firmware's
+stored offset absolutely — but the 2-position average was never a
+complete replacement value, only a **correction** relative to whatever
+offset was already stored (confirmed algebraically: the average equals
+`B−O` or `O−B`, where `B` is the true hardware bias and `O` is the
+pre-existing offset — never `B` alone). `CAL:` was structurally the
+wrong command for what this value represents.
 
 ## The fix
-Track the offset the app itself knows is currently in effect, and solve
-for the pure hardware bias directly instead of assuming a zero starting
-point. `CAL:` is confirmed (from firmware source) to be an absolute set,
-so the app can be certain of the resulting offset immediately after any
-successful `CAL:` command, regardless of what it was before. Verified
-correct for both axes independently via simulation (roll: with
-negation; pitch: without) before implementing.
+Send the exact same correction values via `TAR:` (additive) instead of
+`CAL:`. The firmware then adds the correction to whatever it currently
+has: `pitchOffset_new = O + (B−O) = B`; `rollOffset_new = O + (O−B
+negated) = B` — isolating the pure hardware bias exactly, with **zero
+dependency on the app knowing `O`**. Verified numerically with two
+different, deliberately untracked `O` values before implementing; both
+converged to the identical, correct bias either way — confirming this
+works regardless of an earlier Tare, a persisted offset from a prior
+session, or whether this is the first calibration in a session.
 
-## Honest, known limitation — not hidden
-At connect time, this session has no way to know what offset the
-firmware already has persisted from a prior session or
-standalone/physical-button use — there's no query command in this
-protocol to ask. So the **first** calibration in a fresh session may
-still land off by whatever that unknown prior offset was, same as v1.5.
+This eliminates the entire `knownPitchOffsetRef`/`knownRollOffsetRef`
+tracking mechanism v1.6 added — removed entirely, along with its usages
+in Tare, Reset, and disconnect handling. **Net simpler than v1.6, not
+just more correct.**
 
-**Every calibration after that first one is now mathematically exact**,
-not just visually close, because by then the tracked offset is
-genuinely known. If a first calibration looks off, tapping Re-Calibrate
-once now resolves it *exactly*, not just approximately.
+## Also updated
+The calibration-complete message now clarifies that Calibration removes
+sensor/mounting bias, distinct from Tare (which zeroes to a specific
+surface) — per a testing-methodology note from the same review: "return
+the level to its original position; Tare afterward to treat that surface
+as zero."
 
 ## Family naming (current)
 - **Digital Level RV** — MPU-6050, 4-point bull's-eye UI, RV market
 - **Digital Level Tradesman** — MPU-6050, FRONT/REAR bubble-mimic UI, general trades
 - **Digital Level Tradesman 4 Point** (this product) — MPU-6050, 4-point bull's-eye UI, general trades / machine leveling
 - **Digital Level Pro** — ADXL355, standard bubble UI, precision/millwright
-- **Digital Level Pro 4 Point** — ADXL355, 4-point bull's-eye UI, precision/millwright — still needs Calibration ported, and would need this same fix applied
+- **Digital Level Pro 4 Point** — ADXL355, 4-point bull's-eye UI, precision/millwright — still needs Calibration ported, using this same, simpler TAR:-based approach
 
 ## Known gap
 No `icons/` folder included — same as every other package in this family.
