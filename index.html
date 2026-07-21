@@ -1,8 +1,40 @@
 <!DOCTYPE html>
 <!--
   Digital Level Tradesman 4 Point -- Web App
-  Version: 1.4
-  Date:    2026-07-19
+  Version: 1.5
+  Date:    2026-07-21
+
+  New in v1.5 (changes from v1.4): added a 2-position in-app Calibration
+  feature. Previously absent from this product entirely -- only Tare
+  existed in the app; Calibration was standalone-button-only. This gap
+  was flagged, then deferred, when the original Pro 4 Point + Tradesman
+  4 Point Operator's Guide was built (that guide's Calibration section
+  described a feature that didn't actually exist in either app). Ported
+  from Digital Level Tradesman (standard), which already has this
+  feature working correctly.
+
+  Sampling reads directly from epRef.current/erRef.current (the same
+  smoothed accumulator that feeds the display), rather than adding a
+  separate pitch/roll-tracking ref pair -- one less piece of state to
+  keep in sync with the existing Tare/EMA machinery.
+
+  CRITICAL, applied deliberately: this product negates roll on receipt
+  for display (rr=-parseFloat(m[2])), same as it always has. The
+  calibration set command negates the sampled roll average back
+  (-or_.toFixed(2)) before sending, exactly matching the fix already
+  applied to this product's Tare in v1.4 -- sending the already-negated
+  display value directly would reproduce the exact bug found and fixed
+  there: the error doesn't correct, it doubles with each use. Pitch
+  needs no such correction; it was never negated.
+
+  Confirmed by diff against v1.4: every changed line is an addition --
+  nothing existing was removed or modified. This is a purely additive
+  feature, isolated from Tare, the bull's-eye display, demo modes, and
+  BLE connect/disconnect handling.
+
+  Pro 4 Point intentionally NOT touched in this pass -- set aside for a
+  future update, per explicit instruction, to keep this change scoped
+  and shippable today.
 
   New in v1.4 (changes from v1.3): bubble response speed. Built clean on
   top of v1.3's corrected baseline (branding removal preserved, confirmed
@@ -508,6 +540,18 @@ function App(){
   const[pitch,setPitch]=useState(0);
   const[roll,setRoll]=useState(0);
 
+  // v1.5: 2-position Calibration, ported from Digital Level Tradesman
+  // (standard), which already has this feature working. Not previously
+  // present in this product at all -- Tare was the only in-app offset
+  // tool; Calibration was standalone-button-only. Set Pro 4 Point aside
+  // for a future update; this port is scoped to Tradesman 4 Point only.
+  const[showCal,setShowCal]=useState(false);
+  const[calPhase,setCalPhase]=useState(0);
+  const[countdown,setCountdown]=useState(3);
+  const[calOffsets,setCalOffsets]=useState(null);
+  const pos1Ref=useRef(null);
+  const calSamplesRef=useRef([]);
+
   const[demoMode,setDemoMode]=useState(false);
   const[screws,setScrews]=useState(DEFAULT_SCREWS);
   const[simActive,setSim]=useState(false);
@@ -605,6 +649,60 @@ function App(){
     setPitch(+(epRef.current).toFixed(2));
     setRoll( +(erRef.current).toFixed(2));
   },[send,toast]);
+
+  // v1.5: Calibration logic, ported from Tradesman standard. Samples
+  // directly from epRef.current/erRef.current (the same smoothed
+  // accumulator that feeds the display) rather than adding a separate
+  // pitch/roll-tracking ref pair -- one less piece of state to keep in
+  // sync.
+  const collectSamples=(n,ms)=>new Promise(resolve=>{
+    calSamplesRef.current=[];
+    let count=0;
+    const id=setInterval(()=>{
+      calSamplesRef.current.push({pitch:epRef.current,roll:erRef.current});
+      if(++count>=n){
+        clearInterval(id);
+        const avg=(arr,k)=>arr.reduce((s,r)=>s+r[k],0)/arr.length;
+        resolve({pitch:avg(calSamplesRef.current,'pitch'),roll:avg(calSamplesRef.current,'roll')});
+      }
+    },ms);
+  });
+
+  const runCountdown=(secs)=>new Promise(resolve=>{
+    let cd=secs;setCountdown(cd);
+    const id=setInterval(()=>{cd--;setCountdown(cd);if(cd<=0){clearInterval(id);resolve();}},1000);
+  });
+
+  const startCalibration=async()=>{
+    setCalPhase(1);await runCountdown(3);
+    setCalPhase(2);
+    pos1Ref.current=await collectSamples(60,100);
+    setCalPhase(3);
+  };
+
+  const startPosition2=async()=>{
+    setCalPhase(4);await runCountdown(3);
+    setCalPhase(5);
+    const p2=await collectSamples(60,100);
+    const p1=pos1Ref.current;
+    const op=(p1.pitch+p2.pitch)/2;
+    const or_=(p1.roll+p2.roll)/2;
+    setCalOffsets({pitch:op,roll:or_});
+    setCalPhase(6);
+    // Roll must be negated back before sending, exactly like Tare
+    // (v1.4) -- this product negates roll on receipt for display
+    // (rr=-parseFloat(m[2])), but the firmware expects its own,
+    // non-negated convention. Sending the already-negated value would
+    // reproduce the exact bug found and fixed on this product's Tare:
+    // the error doesn't correct, it doubles with each use. Pitch needs
+    // no such correction -- it was never negated.
+    send(`CAL:${op.toFixed(2)},${(-or_).toFixed(2)}`);
+  };
+
+  const resetCalibration=()=>{
+    setCalOffsets(null);setCalPhase(0);
+    send('CAL:0.00,0.00');toast('Calibration reset');
+  };
 
   const onDisc=useCallback(()=>{
     setIsConnected(false);txRef.current=null;
@@ -850,10 +948,107 @@ function App(){
               color:'#fbbf24',fontSize:'14px',fontWeight:700,cursor:'pointer'}},
           'Tare to Current Position'),
 
+        // Calibration (v1.5, ported from Tradesman standard)
+        h('div',{style:{background:'rgba(13,17,23,0.7)',borderRadius:'16px',
+            border:'1px solid rgba(30,58,95,0.5)',overflow:'hidden'}},
+          h('button',{
+              onClick:()=>setShowCal(s=>!s),
+              style:{width:'100%',padding:'14px 16px',display:'flex',
+                alignItems:'center',justifyContent:'space-between',
+                background:'transparent',border:'none',cursor:'pointer'}},
+            h('span',{style:{fontSize:'13px',fontWeight:600,color:'#cbd5e1',
+                display:'flex',alignItems:'center',gap:'8px'}},
+              '\u2699\uFE0F Calibration'),
+            h('span',{style:{fontSize:'12px',color:'#475569'}}, showCal?'\u25B2':'\u25BC')
+          ),
+          showCal&&h('div',{style:{padding:'0 16px 16px',
+              borderTop:'1px solid #1e293b'}},
+            h('div',{style:{height:'12px'}}),
+            (calPhase===0||calPhase===6)&&h('div',{style:{padding:'10px',
+                borderRadius:'10px',background:'rgba(251,191,36,0.1)',
+                border:'1px solid rgba(251,191,36,0.3)'}},
+              h('p',{style:{fontSize:'11px',fontWeight:700,color:'#fbbf24',margin:'0 0 4px'}},
+                'Two-position method \u2014 no flat reference needed:'),
+              h('ol',{style:{fontSize:'11px',color:'#cbd5e1',margin:0,paddingLeft:'18px'}},
+                h('li',null,'Place on any stable surface and tap Start'),
+                h('li',null,'Hold still during countdown and sampling'),
+                h('li',null,h('strong',null,'Rotate exactly 180\u00B0'),' end-for-end'),
+                h('li',null,'Tap Sample Position 2 and hold still')
+              )
+            ),
+            h('div',{style:{display:'flex',alignItems:'center',gap:'6px',
+                fontSize:'11px',color:'#64748b',marginTop:'10px'}},
+              [{n:1,label:'Pos 1'},{n:2,label:'Flip'},{n:3,label:'Pos 2'},{n:4,label:'Done'}].map((s,i)=>{
+                const active=(s.n===1&&calPhase<=2)||(s.n===2&&calPhase===3)||(s.n===3&&(calPhase===4||calPhase===5))||(s.n===4&&calPhase===6);
+                const done=(s.n===1&&calPhase>=3)||(s.n===2&&calPhase>=4)||(s.n===3&&calPhase>=6)||(s.n===4&&calPhase===6);
+                return h(React.Fragment,{key:s.n},
+                  h('span',{style:{padding:'2px 8px',borderRadius:'999px',
+                      border:`1px solid ${done?'rgba(52,211,153,0.4)':active?'rgba(251,191,36,0.4)':'#334155'}`,
+                      background:done?'rgba(52,211,153,0.2)':active?'rgba(251,191,36,0.2)':'transparent',
+                      color:done?'#34d399':active?'#fbbf24':'#64748b'}},s.label),
+                  i<3&&h('span',{style:{flex:1,borderTop:'1px dashed #334155'}})
+                );
+              })
+            ),
+            (calPhase===1||calPhase===4)&&h('div',{style:{textAlign:'center',padding:'12px 0'}},
+              h('p',{style:{fontSize:'40px',fontWeight:700,color:'#fbbf24',margin:0}},countdown),
+              h('p',{style:{fontSize:'11px',color:'#94a3b8',margin:'4px 0 0'}},'Hold still\u2026')
+            ),
+            (calPhase===2||calPhase===5)&&h('div',{style:{textAlign:'center',padding:'12px 0'}},
+              h('p',{style:{fontSize:'11px',color:'#94a3b8',margin:0}},'Sampling\u2026 keep still')
+            ),
+            calPhase===3&&h('div',{style:{padding:'10px',borderRadius:'10px',
+                background:'rgba(96,165,250,0.1)',border:'1px solid rgba(96,165,250,0.3)',
+                textAlign:'center'}},
+              h('p',{style:{fontSize:'13px',fontWeight:700,color:'#93c5fd',margin:0}},'\u2195 Rotate 180\u00B0 now'),
+              h('p',{style:{fontSize:'11px',color:'#94a3b8',margin:'4px 0 0'}},'Flip end-for-end, then tap below')
+            ),
+            calPhase===6&&calOffsets&&h('div',{style:{display:'flex',gap:'10px',marginTop:'10px'}},
+              h('div',{style:{flex:1,padding:'8px',borderRadius:'10px',
+                  background:'rgba(15,25,41,0.6)',textAlign:'center'}},
+                h('p',{style:{fontSize:'10px',color:'#64748b',margin:0}},'Pitch offset'),
+                h('p',{style:{fontSize:'13px',fontFamily:'monospace',color:'#34d399',margin:'2px 0 0'}},
+                  `${calOffsets.pitch>0?'+':''}${calOffsets.pitch.toFixed(2)}\u00B0`)
+              ),
+              h('div',{style:{flex:1,padding:'8px',borderRadius:'10px',
+                  background:'rgba(15,25,41,0.6)',textAlign:'center'}},
+                h('p',{style:{fontSize:'10px',color:'#64748b',margin:0}},'Roll offset'),
+                h('p',{style:{fontSize:'13px',fontFamily:'monospace',color:'#34d399',margin:'2px 0 0'}},
+                  `${calOffsets.roll>0?'+':''}${calOffsets.roll.toFixed(2)}\u00B0`)
+              )
+            ),
+            calPhase===6&&h('p',{style:{textAlign:'center',fontSize:'12px',color:'#34d399',margin:'10px 0 0'}},
+              '\u2713 Calibration applied'),
+            h('div',{style:{display:'flex',gap:'10px',marginTop:'12px'}},
+              (calPhase===0||calPhase===6)&&h('button',{
+                  onClick:startCalibration,disabled:!isConnected,
+                  style:{flex:1,padding:'10px',borderRadius:'12px',border:'none',
+                    fontSize:'13px',fontWeight:700,cursor:isConnected?'pointer':'not-allowed',
+                    background:isConnected?'#d97706':'rgba(51,65,85,0.5)',
+                    color:isConnected?'white':'#475569'}},
+                calPhase===6?'Re-Calibrate':'Start'),
+              calPhase===3&&h('button',{
+                  onClick:startPosition2,
+                  style:{flex:1,padding:'10px',borderRadius:'12px',border:'none',
+                    fontSize:'13px',fontWeight:700,cursor:'pointer',
+                    background:'#2563eb',color:'white'}},
+                'Sample Position 2'),
+              calOffsets&&calPhase===6&&h('button',{
+                  onClick:resetCalibration,
+                  style:{padding:'10px 16px',borderRadius:'12px',
+                    border:'1px solid #334155',background:'transparent',
+                    color:'#cbd5e1',fontSize:'13px',fontWeight:600,cursor:'pointer'}},
+                'Reset')
+            ),
+            !isConnected&&h('p',{style:{textAlign:'center',fontSize:'11px',color:'#64748b',margin:'10px 0 0'}},
+              'Connect via BLE to calibrate')
+          )
+        ),
+
         // Footer
         h('div',{style:{textAlign:'center',fontSize:'11px',color:'#1e3a5f',paddingTop:'4px'}},
           h('p',{style:{margin:0}},
-            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 v1.4`)
+            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 v1.5`)
         )
       )
     ),

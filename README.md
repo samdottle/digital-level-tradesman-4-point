@@ -1,43 +1,46 @@
 # Digital Level Tradesman 4 Point — Web App
 
-**Version 1.4** · 2026-07-19 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
+**Version 1.5** · 2026-07-21 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
 
-## What changed in v1.4
-Bubble response speed. Built clean on top of v1.3's corrected baseline
-(branding removal preserved, confirmed below), rather than carried
-forward from the killed v1.3 build.
+## What changed in v1.5
+Added a 2-position in-app Calibration feature. Previously **absent from
+this product entirely** — only Tare existed in the app; Calibration was
+standalone-button-only. This gap was flagged, then deferred, when the
+original Pro 4 Point + Tradesman 4 Point Operator's Guide was built (that
+guide's Calibration section described a feature that didn't actually
+exist in either app). Ported from Digital Level Tradesman (standard),
+which already has this feature working correctly.
 
-Re-added adaptive two-rate EMA smoothing:
-- Fast alpha (0.30) while a reading is still catching up to a real
-  change (e.g. someone turning a leveling screw)
-- Drops back to the original slow, stable alpha (0.05) once close to
-  settled
-- Applied independently per axis, since a real adjustment often only
-  changes one
-- Does **not** change steady-state accuracy — only how long it takes to
-  get there
+Sampling reads directly from `epRef.current`/`erRef.current` (the same
+smoothed accumulator that feeds the display), rather than adding a
+separate pitch/roll-tracking ref pair — one less piece of state to keep
+in sync with the existing Tare/EMA machinery.
 
-## Confirmed before implementing
-- Isolated from Tare, connect-time startup averaging, and all three demo
-  modes — same verification as the killed build; none of those touch
-  this smoothing-rate logic
-- "MPU-6050 · ESP32 · BLE" branding remains removed from both the header
-  and footer (v1.3's fix) — this version only adds the smoothing change,
-  nothing else
+## Critical fix applied deliberately, not overlooked
+This product negates roll on receipt for display
+(`rr=-parseFloat(m[2])`), same as it always has. The calibration set
+command negates the sampled roll average back (`-or_.toFixed(2)`) before
+sending, exactly matching the fix already applied to this product's Tare
+in v1.4 — sending the already-negated display value directly would
+reproduce the exact bug found and fixed there: the error doesn't
+correct, it doubles with each use. Pitch needs no such correction; it
+was never negated.
 
-## Still known, not yet done
-- Version number isn't visible under the product name at the top (only
-  in the footer) — the same fix Tradesman standard got in v1.8, not yet
-  applied here
-- Pro 4 Point still has the branding-removal gap v1.3 fixed here, not
-  yet ported
+## Confirmed by diff against v1.4
+Every changed line is an *addition* — nothing existing was removed or
+modified. This is a purely additive feature, isolated from Tare, the
+bull's-eye display, demo modes, and BLE connect/disconnect handling.
+
+## Pro 4 Point intentionally not touched
+Set aside for a future update, per explicit instruction, to keep this
+change scoped and shippable today.
 
 ## Family naming (current)
 - **Digital Level RV** — MPU-6050, 4-point bull's-eye UI, RV market
-- **Digital Level Tradesman** — MPU-6050, standard bubble UI, general trades
+- **Digital Level Tradesman** — MPU-6050, FRONT/REAR bubble-mimic UI, general trades
 - **Digital Level Tradesman 4 Point** (this product) — MPU-6050, 4-point bull's-eye UI, general trades / machine leveling
 - **Digital Level Pro** — ADXL355, standard bubble UI, precision/millwright
-- **Digital Level Pro 4 Point** — ADXL355, 4-point bull's-eye UI, precision/millwright
+- **Digital Level Pro 4 Point** — ADXL355, 4-point bull's-eye UI, precision/millwright — **still needs this same Calibration feature ported**
 
 ## Known gap
 No `icons/` folder included — same as every other package in this family.
