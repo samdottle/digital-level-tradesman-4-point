@@ -1,8 +1,44 @@
 <!DOCTYPE html>
 <!--
   Digital Level Tradesman 4 Point -- Web App
-  Version: 1.5
+  Version: 1.6
   Date:    2026-07-21
+
+  New in v1.6 (changes from v1.5): fixes a real bug in v1.5's newly-added
+  Calibration, found via a precise, reproducible test: power on, connect,
+  Tare to zero display, then Calibrate. First calibration left the bubble
+  2.35 deg off; tapping Re-Calibrate moved it back to center.
+
+  Traced and verified numerically before writing any fix (see this
+  product's git history / conversation record for the full derivation):
+  the 2-position average v1.5 computed is (O - B) for roll or (B - O)
+  for pitch, where O is whatever offset was ALREADY in effect when
+  sampling began -- not necessarily 0. v1.5's math assumed O=0
+  unconditionally, so any pre-existing offset (from a prior Tare, exactly
+  as tested) leaked directly into the result. The reported -2.35 was
+  reproduced exactly by this mechanism in simulation before any fix was
+  written. Re-Calibrate improved it a lot but didn't zero it exactly,
+  since the identical flawed math was simply reapplied a second time.
+
+  Fix: track the offset the app itself knows is currently in effect
+  (knownPitchOffsetRef/knownRollOffsetRef, declared above), and solve for
+  the pure hardware bias directly instead of assuming a zero starting
+  point. CAL: is confirmed (from firmware source) to be an absolute set,
+  so the app can be certain of the resulting offset immediately after ANY
+  successful CAL: command, regardless of what it was before -- verified
+  correct for both axes independently via simulation (roll: with
+  negation; pitch: without) before implementing.
+
+  Honest, known limitation, not hidden: at connect time, this session has
+  no way to know what offset the firmware already has persisted from a
+  prior session or standalone/physical-button use -- there's no query
+  command in this protocol to ask. So the FIRST calibration in a fresh
+  session may still land off by whatever that unknown prior offset was,
+  same as v1.5. Every calibration AFTER that first one is now
+  mathematically exact, not just visually close, because by then the
+  tracked offset is genuinely known. If a first calibration looks off,
+  tapping Re-Calibrate once now resolves it exactly, not just
+  approximately.
 
   New in v1.5 (changes from v1.4): added a 2-position in-app Calibration
   feature. Previously absent from this product entirely -- only Tare
@@ -552,6 +588,33 @@ function App(){
   const pos1Ref=useRef(null);
   const calSamplesRef=useRef([]);
 
+  // v1.6: fixes a real bug found in v1.5's calibration. Traced precisely
+  // (verified numerically before writing any fix): the 2-position average
+  // is `O - B` (roll) or `B - O` (pitch), where O is whatever offset was
+  // ALREADY in effect when sampling began -- NOT necessarily 0. v1.5's
+  // math assumed O=0, so any pre-existing offset (e.g. from Tare, exactly
+  // as reported: tare-then-calibrate left a 2.35 deg residual) leaked
+  // straight into the result. Tapping Re-Calibrate improved it a lot but
+  // didn't zero it exactly, since the SAME flawed math was reapplied.
+  //   Fix: track the offset the app itself knows is currently in effect,
+  // and solve for the pure hardware bias directly, instead of assuming
+  // it's starting from zero. CAL: is an ABSOLUTE set (confirmed from
+  // firmware source), so the app can be certain of the resulting offset
+  // immediately after ANY successful CAL: command, regardless of what it
+  // was before -- this tracking is reliable from that point on.
+  //   Known, honest limitation: at connect time, this session has no way
+  // to know what offset the firmware already has persisted (from a prior
+  // session, or standalone/physical-button use) -- there's no query
+  // command in this protocol to ask. So the VERY FIRST calibration in a
+  // fresh session may still land off by whatever that unknown prior
+  // offset was, same as v1.5. But unlike v1.5, every calibration AFTER
+  // that first one is now mathematically EXACT, not just visually close
+  // -- because by then the tracked offset is genuinely known, established
+  // by that first CAL: command's own, app-known value. Tapping
+  // Re-Calibrate once, if the first result looks off, resolves it exactly.
+  const knownPitchOffsetRef=useRef(null);
+  const knownRollOffsetRef=useRef(null);
+
   const[demoMode,setDemoMode]=useState(false);
   const[screws,setScrews]=useState(DEFAULT_SCREWS);
   const[simActive,setSim]=useState(false);
@@ -689,19 +752,35 @@ function App(){
     const or_=(p1.roll+p2.roll)/2;
     setCalOffsets({pitch:op,roll:or_});
     setCalPhase(6);
-    // Roll must be negated back before sending, exactly like Tare
-    // (v1.4) -- this product negates roll on receipt for display
-    // (rr=-parseFloat(m[2])), but the firmware expects its own,
-    // non-negated convention. Sending the already-negated value would
-    // reproduce the exact bug found and fixed on this product's Tare:
-    // the error doesn't correct, it doubles with each use. Pitch needs
-    // no such correction -- it was never negated.
-    send(`CAL:${op.toFixed(2)},${(-or_).toFixed(2)}`);
+    // v1.6: op/or_ are averages of the DISPLAYED (already offset-
+    // corrected) readings, so they equal (trueBias - O) or (O - trueBias)
+    // -- NOT the pure hardware bias -- where O is whatever offset was
+    // already in effect when sampling began. Solve for the pure bias
+    // directly using the tracked offset, when known (see
+    // knownPitchOffsetRef/knownRollOffsetRef above for the full
+    // reasoning and its honest limitation). Falls back to the v1.5
+    // formula (assumes O=0) only when genuinely unknown -- e.g. the very
+    // first calibration in a fresh session.
+    const pitchToSend = knownPitchOffsetRef.current===null
+      ? op
+      : op+knownPitchOffsetRef.current;
+    const rollToSend = knownRollOffsetRef.current===null
+      ? -or_
+      : knownRollOffsetRef.current-or_;
+    send(`CAL:${pitchToSend.toFixed(2)},${rollToSend.toFixed(2)}`);
+    // CAL: is an absolute set (confirmed from firmware source), so
+    // whatever was just sent IS now the firmware's offset, with
+    // certainty -- update the tracking refs accordingly for next time.
+    knownPitchOffsetRef.current=pitchToSend;
+    knownRollOffsetRef.current=rollToSend;
   };
 
   const resetCalibration=()=>{
     setCalOffsets(null);setCalPhase(0);
     send('CAL:0.00,0.00');toast('Calibration reset');
+    // Absolute set, same certainty as any other CAL: command.
+    knownPitchOffsetRef.current=0;
+    knownRollOffsetRef.current=0;
   };
 
   const onDisc=useCallback(()=>{
@@ -710,6 +789,10 @@ function App(){
     // Guard against disconnecting mid-tare -- don't leave a stale
     // 'taring' state carried into a future reconnect.
     tareStateRef.current='idle';
+    // v1.6: a future reconnect could follow standalone/physical-button
+    // use in between, which this session has no visibility into -- don't
+    // carry a now-possibly-stale tracked offset forward.
+    knownPitchOffsetRef.current=null;knownRollOffsetRef.current=null;
     toast('Disconnected');
   },[toast]);
 
@@ -932,12 +1015,20 @@ function App(){
               }
               tareStateRef.current='taring';
               toast('Taring\u2026');
-              const ok=await send(`TAR:${pitch.toFixed(2)},${(-roll).toFixed(2)}`);
+              const pitchSent=pitch.toFixed(2), rollSent=(-roll).toFixed(2);
+              const ok=await send(`TAR:${pitchSent},${rollSent}`);
               tareStateRef.current='idle';
               if(!ok){
                 toast('Tare failed \u2014 command not sent, try again','error');
                 return;
               }
+              // v1.6: TAR: is additive (confirmed from firmware source),
+              // so keep the calibration offset-tracking refs in sync the
+              // same way, but ONLY when already known -- if unknown
+              // (null), adding to "unknown" still isn't knowable, so
+              // leave it null rather than guess.
+              if(knownPitchOffsetRef.current!==null)knownPitchOffsetRef.current+=parseFloat(pitchSent);
+              if(knownRollOffsetRef.current!==null)knownRollOffsetRef.current+=parseFloat(rollSent);
               epRef.current=0;erRef.current=0;
               setPitch(0);setRoll(0);
               toast('Tared \u2014 display zeroed','success');
@@ -1048,7 +1139,7 @@ function App(){
         // Footer
         h('div',{style:{textAlign:'center',fontSize:'11px',color:'#1e3a5f',paddingTop:'4px'}},
           h('p',{style:{margin:0}},
-            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 v1.5`)
+            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 v1.6`)
         )
       )
     ),
