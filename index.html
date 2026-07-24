@@ -1,6 +1,52 @@
 <!DOCTYPE html>
 <!--
   Digital Level Tradesman 4 Point -- Web App
+  Version: 1.8 (built on top of the locked Proto 1.0 -- not yet
+  re-locked; that's a separate, deliberate step once this is confirmed)
+  Date: 2026-07-23
+
+  New in v1.8: fixes a real bug reported against Proto 1.0 -- "after a
+  precise calibrate, the bubble does not completely center."
+
+  Traced to a gap, not a math error in v1.7's calibration fix (that
+  fix -- sending the correction via TAR: instead of CAL: -- remains
+  correct and is unchanged here). The actual problem: after Calibration
+  sends its corrected offset, nothing resets epRef.current/erRef.current,
+  the EMA smoothing accumulators. They keep holding their
+  pre-calibration values, so the display only gradually converges to the
+  new, correct reading as each new packet blends in at EMA_ALPHA=0.05 --
+  roughly 3-6 seconds to become visually indistinguishable from
+  centered, depending on telemetry rate. Someone glancing at the display
+  right after calibrating would see exactly what was reported: not
+  centered, self-correcting only if they kept watching.
+
+  This is the same bug class already found and fixed for Tare back in
+  v1.1 ("the display drifts back off-center after tare") -- it just
+  never got ported to Calibration when that feature was built later, in
+  v1.5.
+
+  Deliberately NOT copied verbatim from Tare's fix (which resets straight
+  to 0): that's correct for Tare, because zeroing the current position
+  IS the point of tare. Calibration corrects sensor bias, not surface
+  levelness -- the reading right after calibrating isn't necessarily 0,
+  only if the calibration surface itself happened to be level. Forcing a
+  0 reset here would be actively wrong on a non-flat surface. Instead,
+  reused the existing, already-proven startup-buffer mechanism (the same
+  one already used at connect and disconnect): clear the accumulators to
+  null and let the display re-seed itself from a handful of fresh, real
+  post-calibration samples.
+
+  Applied in both places that change the firmware's stored offset:
+  startPosition2 (the calibration result) and resetCalibration (the
+  Reset button) -- Reset has the identical exposure, since it also
+  changes the offset without resetting the accumulator.
+
+  Confirmed by diff against the shipped Proto 1.0: every changed line is
+  an addition, nothing existing was removed or modified.
+
+-->
+<!--
+  Digital Level Tradesman 4 Point -- Web App
   PROTO 1.0 (locked down for shipment)
   Built from v1.7. Date: 2026-07-21
 
@@ -773,11 +819,41 @@ function App(){
     // eliminates the need for knownPitchOffsetRef/knownRollOffsetRef
     // entirely -- removed below.
     send(`TAR:${op.toFixed(2)},${(-or_).toFixed(2)}`);
+    // v1.8: fixes a real bug found after v1.7 shipped -- reported as
+    // "after a precise calibrate, the bubble does not completely
+    // center." Traced to a gap, not a math error: this function sends
+    // the corrected TAR: command (confirmed correct, v1.7) but never
+    // resets epRef.current/erRef.current afterward. Those EMA
+    // accumulators keep holding their pre-calibration values, and the
+    // display only converges to the new, correct reading gradually, as
+    // each new packet blends in at EMA_ALPHA=0.05 -- about 3-6 seconds to
+    // become visually indistinguishable from centered, depending on
+    // telemetry rate. This is the exact same bug class already found and
+    // fixed for Tare (v1.1: "the display drifts back off-center"), just
+    // never ported to Calibration when it was built later.
+    //   Not copying Tare's fix verbatim: Tare resets straight to 0,
+    // which is correct there because zeroing the current position IS
+    // the point of tare. Calibration corrects sensor bias, not surface
+    // levelness -- the reading right after calibrating isn't necessarily
+    // 0 (only if the surface itself is level), so forcing a 0 reset here
+    // would be actively wrong on a non-flat calibration surface. Instead,
+    // reuse the same defensive mechanism already used at connect/
+    // disconnect (see onData and onDisc): clear to null and let the
+    // existing startup-buffer logic seed the display from a handful of
+    // fresh, real post-calibration samples rather than one potentially
+    // noisy single reading or a stale blended one.
+    epRef.current=null;erRef.current=null;startupBufRef.current=[];
   };
 
   const resetCalibration=()=>{
     setCalOffsets(null);setCalPhase(0);
     send('CAL:0.00,0.00');toast('Calibration reset');
+    // v1.8: same fix as startPosition2 above, same reasoning -- Reset
+    // also changes the firmware's stored offset (to 0), so it has the
+    // identical stale-accumulator exposure. Not resetting straight to 0
+    // here either, for the same reason: with the offset cleared, the
+    // raw sensor reading is whatever it actually is, not necessarily 0.
+    epRef.current=null;erRef.current=null;startupBufRef.current=[];
   };
 
   const onDisc=useCallback(()=>{
@@ -838,7 +914,7 @@ function App(){
           h('div',null,
             h('h1',{style:{fontSize:'22px',fontWeight:300,color:'white',margin:0,lineHeight:1}},
               'Digital Level Tradesman ',h('span',{style:{fontWeight:700,color:'#fbbf24'}},'4 Point')),
-            h('p',{style:{fontSize:'12px',color:'#94a3b8',margin:'3px 0 0',fontWeight:600}},'Proto 1.0')
+            h('p',{style:{fontSize:'12px',color:'#94a3b8',margin:'3px 0 0',fontWeight:600}},'v1.8')
           ),
           h('div',{style:{display:'flex',alignItems:'center',gap:'5px',padding:'4px 10px',
               borderRadius:'20px',border:`1px solid ${sc}40`,background:`${sc}12`,
@@ -1125,7 +1201,7 @@ function App(){
         // Footer
         h('div',{style:{textAlign:'center',fontSize:'13px',color:'#64748b',paddingTop:'4px'}},
           h('p',{style:{margin:0}},
-            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 Proto 1.0`)
+            `Level tolerance \u00B1${levelThreshold.toFixed(2)}\u00B0 \u00B7 \u00A9 Digital Level Tradesman 4 Point \u00B7 v1.8`)
         )
       )
     ),
