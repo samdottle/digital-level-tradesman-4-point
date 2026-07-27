@@ -1,57 +1,49 @@
 # Digital Level Tradesman 4 Point — Web App
 
-**Version 1.8** · 2026-07-23 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
+**Version 1.10** · 2026-07-27 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
 
-Built on top of the locked Proto 1.0. Not yet re-locked — that's a
-separate, deliberate step once this fix is confirmed on real hardware.
+Built on top of the locked Proto 1.0. Not yet re-locked — pending your
+confirmation before it replaces Proto 1.0 as the shipping version.
 
-## What was reported against Proto 1.0
-"After a precise calibrate, the bubble does not completely center."
+## What's new
+Adds the **Slope / Degree Calculator**, ported from Digital Level
+Tradesman (standard), where it already exists and works. Missing from
+DLT4P was an oversight in how the 4-point UI was originally built, not
+a deliberate omission — flagged during a product evaluation for
+Facilities Logistics, who received a prototype without it.
 
-## Root cause, traced not guessed
-Not a math error — v1.7's calibration fix (sending the correction via
-`TAR:` instead of `CAL:`) remains correct and is unchanged here. The
-actual gap: after Calibration sends its corrected offset, nothing resets
-`epRef.current`/`erRef.current`, the EMA smoothing accumulators. They
-keep holding their **pre-calibration** values, so the display only
-gradually converges to the new, correct reading as each new packet
-blends in at `EMA_ALPHA=0.05` — roughly 3–6 seconds to become visually
-indistinguishable from centered, depending on telemetry rate. Someone
-glancing at the display right after calibrating would see exactly what
-was reported.
+## Confirmed UI-only before porting, not assumed
+The component carries its own local state (`calcMode`/`calcInput`) and
+has zero dependency on sensor data, BLE connection, or this product's
+pitch/roll specifics — confirmed by reading the standard product's
+actual component before writing anything.
 
-This is the **same bug class already found and fixed for Tare**, back in
-v1.1 ("the display drifts back off-center after tare") — it just never
-got ported to Calibration when that feature was built later, in v1.5.
+## Style adapted, logic copied straight
+The standard product's version uses Tailwind `className` strings and a
+teal accent; this file uses inline style objects throughout and DLT4P's
+own established amber accent (`#fbbf24`) everywhere else in the app.
+Converted to match — teal would have been a visually inconsistent
+one-off in an otherwise fully amber-themed app.
 
-## The fix — deliberately not a copy-paste of Tare's fix
-Tare resets straight to 0, which is correct *there* because zeroing the
-current position is the entire point of tare. Calibration corrects
-sensor bias, not surface levelness — the reading right after calibrating
-isn't necessarily 0, only if the calibration surface itself happened to
-be level. Forcing a 0 reset here would be actively wrong on a non-flat
-surface.
+## Verified with exact math, not just a visual check
+Rendered headless and tested both calculation modes against known exact
+values before considering this done:
+- **45°** → **120.000″** rise, **100.000%** grade (tan(45°) = 1 exactly)
+- **12 in/ft** → **45.0000°** (atan(12/12) = 45° exactly)
 
-Instead, this reuses the existing, already-proven startup-buffer
-mechanism (the same one already used at connect and disconnect): clear
-the accumulators to `null` and let the display re-seed itself from a
-handful of fresh, real post-calibration samples.
+No page errors in either direction.
 
-Applied in **both** places that change the firmware's stored offset:
-`startPosition2` (the calibration result) and `resetCalibration` (the
-Reset button) — Reset has the identical exposure, since it also changes
-the offset without resetting the accumulator.
-
-## Confirmed by diff against the shipped Proto 1.0
-Every changed line is an *addition* — nothing existing was removed or
-modified.
+## Placement
+Directly after Calibration, before the footer — matching where it sits
+in the standard product's own layout and guide ordering. Independent of
+connection state, same as there.
 
 ## Family naming (current)
 - **Digital Level RV** — MPU-6050, 4-point bull's-eye UI, RV market
 - **Digital Level Tradesman** — MPU-6050, FRONT/REAR bubble-mimic UI, general trades
 - **Digital Level Tradesman 4 Point** (this product) — MPU-6050, 4-point bull's-eye UI, general trades / machine leveling
 - **Digital Level Pro** — ADXL355, standard bubble UI, precision/millwright
-- **Digital Level Pro 4 Point** — ADXL355, 4-point bull's-eye UI, precision/millwright — still needs Calibration ported, and would need this same accumulator-reset fix applied too
+- **Digital Level Pro 4 Point** — ADXL355, 4-point bull's-eye UI, precision/millwright — also missing the Slope/Degree Calculator, same fix applies
 
 ## Known gap
 No `icons/` folder included — same as every other package in this family.
