@@ -1,11 +1,14 @@
 # Digital Level Tradesman 4 Point — Web App
 
-**Version 1.10** · 2026-07-27 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
+**Version 1.11 — Test Candidate** · 2026-11-24 · MPU-6050 · Arduino Nano ESP32 · BLE Nordic UART
 
 Built on top of the locked Proto 1.0. Not yet re-locked — pending your
 confirmation before it replaces Proto 1.0 as the shipping version.
 
-## What's new
+## v1.11 changes
+Bubble Demo pointer capture and mouse/touchpad drag handling; touchscreen support retained. Chromebook and hardware regression tests pending. Not released.
+
+## What's new in v1.10
 Adds the **Slope / Degree Calculator**, ported from Digital Level
 Tradesman (standard), where it already exists and works. Missing from
 DLT4P was an oversight in how the 4-point UI was originally built, not
